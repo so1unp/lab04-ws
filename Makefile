@@ -1,29 +1,26 @@
 CC=gcc
 BIN=./bin
-CFLAGS=-g -Wall -Wextra -Wshadow -Wconversion -Wunreachable-code
+CFLAGS=-g -Wall -Wextra -Wshadow -Wconversion -Wunreachable-code -I./src/entidades
+LIBS=-lncurses -lpthread
 
-PROG=nave estacion servidor
-
-LIST=$(addprefix $(BIN)/, $(PROG))
+NAVE_SRC=./src/entidades/nave.c ./src/main/testMovimiento.c
 
 .PHONY: all
-all: $(LIST)
+all: $(BIN)/nave
 
-$(BIN)/%: %.c
-	$(CC) -o $@ $< $(CFLAGS)
-
-%: %.c
-	$(CC) -o $(BIN)/$@ $< $(CFLAGS)
-
-test:
-	@./test.sh ||:
+$(BIN)/nave: $(NAVE_SRC)
+	$(CC) -o $@ $^ $(CFLAGS) $(LIBS)
 
 .PHONY: clean
 clean:
-	rm -f $(LIST)
+	rm -f $(BIN)/nave
+
+.PHONY: test
+test:
+	@./test.sh ||:
 
 zip:
-	git archive --format zip --output ${USER}-lab03.zip HEAD
+	git archive --format zip --output ${USER}-lab04.zip HEAD
 
 html:
 	pandoc -o README.html -f gfm README.md
