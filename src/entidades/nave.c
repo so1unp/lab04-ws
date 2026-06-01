@@ -1,13 +1,20 @@
+#include <fcntl.h>
+#include <mqueue.h>
 #include <ncurses.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 struct Nave {
   int oxigeno;
   int combustible;
   int posX, posY;
   int bodegaMinerales[4];
-  pthread_mutex_t mutex;
+  sem_t *sem_mutex;
 };
 struct Nave nave;
 int combustibleGastadoMovimiento = 1;
@@ -21,23 +28,25 @@ global y luego desbloquea
 void movimientoPorTecla(int xPos, int yPos) {
   if (nave.combustible == 0) {
     printf("Combustible agotado,no puedo moverme");
-    pthread_mutex_unlock(&nave.mutex);
+
     return;
   }
-  pthread_mutex_lock(&nave.mutex);
+
+  sem_wait(nave.sem_mutex);
   nave.posX = xPos;
   nave.posY = yPos;
   nave.combustible -= combustibleGastadoMovimiento;
-  pthread_mutex_unlock(&nave.mutex);
+  sem_post(nave.sem_mutex);
   return;
 }
-/*Aca solo se ve que tecla para mandar las nuevas coordenadas actualizadas, se le suma/resta la velocidad de movimiento*/
+/*Aca solo se ve que tecla para mandar las nuevas coordenadas actualizadas, se
+ * le suma/resta la velocidad de movimiento*/
 void *hilo_propulsion(void *param) {
   // w a s d
   int tecla;
 
   while (1) {
-     tecla = getch();
+    tecla = getch();
     switch (tecla) {
     case 'w':
       movimientoPorTecla(nave.posX, nave.posY - velocidadMovimiento);

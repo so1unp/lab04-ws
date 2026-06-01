@@ -1,6 +1,6 @@
 CC=gcc
 BIN=./bin
-CFLAGS=-g -Wall -Wextra -Wshadow -Wconversion -Wunreachable-code -I./src/entidades
+CFLAGS=-g -Wall -Wextra -Wshadow -Wconversion -Wunreachable-code 
 LIBS=-lncurses -lpthread
 
 NAVE_SRC=./src/entidades/nave.c ./src/main/testMovimiento.c
