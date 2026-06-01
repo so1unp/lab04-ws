@@ -8,9 +8,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <semaphore.h>
-
-#define NOMBRE_COLA "/cola_estacion"
-#define PERMISOS_COLA 0666
+#include <ncurses.h>
+#include "comun.h"
 
 struct Nave{
     int oxigeno;
@@ -62,9 +61,12 @@ int main(int argc, char *argv[])
     if (rc != 0) { perror("pthread_create"); exit(EXIT_FAILURE); }
     printf("hilo_extraccion creado, tid=%lu\n", (unsigned long)hiloExtraccion);
     pthread_join(hiloExtraccion, NULL); // Espera a que el hilo de extracción termine (en este caso, no terminará).
-    
 
-
+    initscr();                 // Inicializa la pantalla de ncurses
+    printw("¡Todo listo! ncurses funciona correctamente."); // Imprime el texto
+    refresh();                 // Actualiza la pantalla para mostrar los cambios
+    getch();                   // Espera a que presiones una tecla
+    endwin();                  // Finaliza el modo ncurses
     // Termina la ejecución del programa.
     exit(EXIT_SUCCESS);
 }
@@ -123,17 +125,17 @@ int trueque_estacion(struct Nave* nave){
     mqd_t cola_respuesta;
     mqd_t cola_estacion;
     struct mq_attr attr;
-    char buffer[256];
-    char respuesta_buffer[256];
+    char buffer[TAMANIO_MAX_MSG];
+    char respuesta_buffer[TAMANIO_MAX_MSG];
     sem_t *semaforo;
 
     attr.mq_flags = 0;
     attr.mq_maxmsg = 10;
-    attr.mq_msgsize = 256;
+    attr.mq_msgsize = TAMANIO_MAX_MSG;
     attr.mq_curmsgs = 0;
 
     /*crea cola de respuesta (lectura)*/
-    cola_respuesta = mq_open(NOMBRE_COLA, PERMISOS_COLA, &attr);
+    cola_respuesta = mq_open(NOMBRE_COLA_ESTACION, PERMISOS_COLA, &attr);
     if (cola_respuesta == (mqd_t) -1) {
         perror("Error al abrir la cola de respuesta");
         return -1;
@@ -146,7 +148,7 @@ int trueque_estacion(struct Nave* nave){
     sem_post(nave->sem_mutex); // --- DESBLOQUEO ---
 
     /*abrir cola de estación para enviar solicitud*/
-    cola_estacion = mq_open(NOMBRE_COLA, PERMISOS_COLA);
+    cola_estacion = mq_open(NOMBRE_COLA_ESTACION, PERMISOS_COLA);
     if (cola_estacion == (mqd_t) -1) {
         perror("Error al abrir la cola de estación");
         mq_close(cola_respuesta);
