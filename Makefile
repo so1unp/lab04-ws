@@ -1,6 +1,7 @@
 CC=gcc
 BIN=./bin
 CFLAGS=-g -Wall -Wextra -Wshadow -Wconversion -Wunreachable-code
+LDLIBS=-pthread -lncurses
 
 PROG=nave estacion servidor
 
@@ -10,10 +11,10 @@ LIST=$(addprefix $(BIN)/, $(PROG))
 all: $(LIST)
 
 $(BIN)/%: %.c
-	$(CC) -o $@ $< $(CFLAGS)
+	$(CC) -o $@ $< $(CFLAGS) $(LDLIBS)
 
 %: %.c
-	$(CC) -o $(BIN)/$@ $< $(CFLAGS)
+	$(CC) -o $(BIN)/$@ $< $(CFLAGS) $(LDLIBS)
 
 test:
 	@./test.sh ||:
