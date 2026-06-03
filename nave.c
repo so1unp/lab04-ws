@@ -61,12 +61,6 @@ int main(int argc, char *argv[])
     if (rc != 0) { perror("pthread_create"); exit(EXIT_FAILURE); }
     printf("hilo_extraccion creado, tid=%lu\n", (unsigned long)hiloExtraccion);
     pthread_join(hiloExtraccion, NULL); // Espera a que el hilo de extracción termine (en este caso, no terminará).
-
-    initscr();                 // Inicializa la pantalla de ncurses
-    printw("¡Todo listo! ncurses funciona correctamente."); // Imprime el texto
-    refresh();                 // Actualiza la pantalla para mostrar los cambios
-    getch();                   // Espera a que presiones una tecla
-    endwin();                  // Finaliza el modo ncurses
     // Termina la ejecución del programa.
     exit(EXIT_SUCCESS);
 }
@@ -79,7 +73,7 @@ void* hilo_extraccion(void* arg){
     struct Nave* nave = (struct Nave*) arg;
     // Simula la extracción de minerales y el consumo de combustible
     printf("hilo_extraccion iniciado, pthread_self=%lu\n", (unsigned long)pthread_self());
-    srand(time(NULL)); // Inicializa la semilla para la generación de números aleatorios
+    srand((unsigned int)time(NULL)); // Inicializa la semilla para la generación de números aleatorios
     int asteroideAdyacente = 1;
 
     while(1){
@@ -114,20 +108,18 @@ void* hilo_extraccion(void* arg){
     }
     return NULL;
 }
+
 /** 
  * Función para realizar el trueque en la estación espacial.
  * Esta función se encarga de enviar los recursos de la nave a la estación espacial a través de una cola de mensajes y recibir los recursos necesarios a cambio.
  *
  */
-
-
 int trueque_estacion(struct Nave* nave){
     mqd_t cola_respuesta;
     mqd_t cola_estacion;
     struct mq_attr attr;
     char buffer[TAMANIO_MAX_MSG];
     char respuesta_buffer[TAMANIO_MAX_MSG];
-    sem_t *semaforo;
 
     attr.mq_flags = 0;
     attr.mq_maxmsg = 10;
@@ -146,6 +138,8 @@ int trueque_estacion(struct Nave* nave){
     sem_wait(nave->sem_mutex); // --- BLOQUEO ---
     int totalMinerales = calcular_total_minerales(nave);
     sem_post(nave->sem_mutex); // --- DESBLOQUEO ---
+
+    snprintf(buffer, TAMANIO_MAX_MSG, "MINERALES:%d", totalMinerales); // Prepara el mensaje con la cantidad de minerales para enviar a la estación
 
     /*abrir cola de estación para enviar solicitud*/
     cola_estacion = mq_open(NOMBRE_COLA_ESTACION, PERMISOS_COLA);
