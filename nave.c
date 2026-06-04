@@ -10,7 +10,7 @@ struct Nave {
     int posX, posY;
     int bodegaMinerales[4];
     pthread_mutex_t mutex;
-    pthread_mutex_t mutex_pantalla; // <-- Punto final eliminado
+    pthread_mutex_t mutex_pantalla;
 };
 
 void* hilo_soporte_vital(void* arg);
@@ -33,6 +33,7 @@ int main(void) {
    
     // 1. Inicializamos herramientas y mutex ANTES de crear el hilo
     initscr();
+    curs_set(0); 
     pthread_mutex_init(&mi_nave.mutex, NULL);
     pthread_mutex_init(&mi_nave.mutex_pantalla, NULL);
     
@@ -52,44 +53,91 @@ int main(void) {
     exit(EXIT_SUCCESS);
 }
 
+
+
+
 void* hilo_radar(void* arg) {
     struct Nave* nave = (struct Nave*) arg;
     int counter = 0;
-    int fila = 1, columna = 1; // Posición inicial
+    int fila = 1, columna = 1; 
+    
+    
+    int OFFSET_X = 30; 
+    int OFFSET_Y = 2;
+    int ancho_mapa = 40*3;
+    int alto_mapa = 15*2;
+    
+    char arr[11];
+    char arr2[11];
+    arr2[10] = '\0';
+    arr[10] = '\0';
+    
 
     while (counter < 100) {
-        
+
         // Bloqueo de pantalla
         pthread_mutex_lock(&nave->mutex_pantalla);
         clear();
+
         
-        // Bloqueo de datos de la nave
+        // --- DIBUJO DEL MAPA ---
+        for(int i = OFFSET_X; i < OFFSET_X + ancho_mapa; i++){
+            mvprintw(OFFSET_Y, i, "-");
+        }
+        
+        for(int j = OFFSET_Y; j < OFFSET_Y + alto_mapa; j++){
+            mvprintw(j, OFFSET_X, "|");
+        } 
+        
         pthread_mutex_lock(&nave->mutex);
         
-        // Impresión en coordenadas (Y, X) incrementando la fila (Y) y sin saltos de línea (\n)
-        mvprintw(fila, columna, "Oxígeno: %d", nave->oxigeno);
-        mvprintw(fila + 1, columna, "Combustible: %d", nave->combustible);
-        mvprintw(fila + 2, columna, "Posición X: %d", nave->posX);
-        mvprintw(fila + 3, columna, "Posición Y: %d", nave->posY);
+        int mitad = (nave->oxigeno + 9) / 10;
+        int mitad2 = (nave->combustible + 9) / 10;
+        
+        
+        for(int k = 0; k < mitad2; k++){
+            arr2[k] = '=';
+        }
+        arr2[mitad2] = '\0'; 
+
+        
+        for(int k = 0; k < mitad; k++){
+            arr[k] = '=';
+        }
+        arr[mitad] = '\0'; 
+
+        // --- DIBUJO DE ESTADÍSTICAS ---
+        mvprintw(fila, columna, "Oxigeno: %s", arr);
+        mvprintw(fila + 1, columna, "Combustible: %s", arr2);
+        mvprintw(fila + 2, columna, "Posicion X: %d", nave->posX);
+        mvprintw(fila + 3, columna, "Posicion Y: %d", nave->posY);
         mvprintw(fila + 4, columna, "Minerales 1: %d", nave->bodegaMinerales[0]);
         mvprintw(fila + 5, columna, "Minerales 2: %d", nave->bodegaMinerales[1]);
         mvprintw(fila + 6, columna, "Minerales 3: %d", nave->bodegaMinerales[2]);
         mvprintw(fila + 7, columna, "Minerales 4: %d", nave->bodegaMinerales[3]);
         mvprintw(fila + 8, columna, "Tiempo: %d segundos", counter);
        
+        // --- DIBUJO DE LA NAVE ---
+        mvprintw(nave->posY + OFFSET_Y + 1, nave->posX + OFFSET_X + 1, "A");
+
         // Desbloqueo de datos
         pthread_mutex_unlock(&nave->mutex);
-        
-        // Volcado a pantalla
         refresh();
         
         // Desbloqueo de pantalla
         pthread_mutex_unlock(&nave->mutex_pantalla);
         
-        // El hilo descansa fuera de los bloqueos
-        usleep(100000);
+        usleep(100000); // 0.1 segundos
         
         counter++;
+        
+        // Mocking
+        nave->posX++;
+        if (counter % 3 == 0) {
+            nave->posY++; 
+        }
+        nave->oxigeno --; 
+        nave->combustible --; 
     }
     return NULL;
 }
