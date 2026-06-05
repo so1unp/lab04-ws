@@ -21,15 +21,35 @@ struct Nave{
     int combustibleGastadoMovimiento; // rocio
     int bodegaMinerales[4];
     sem_t *sem_mutex;
+    int ancho, largo;
     sem_t *mutex_pantalla; // mutex para sincronizar acceso a la pantalla
 };
+struct Asteroides {
+  int minerales;
+  int posX, posY;
+  int ancho, largo;
+  sem_t *sem_mutex;
+};
+struct Estacion {
+  int minerales;
+  int posX, posY;
+  int ancho, largo;
+  sem_t *sem_mutex;
+};
+struct Mapa {
+  struct Nave *nave;
+  struct Asteroides asteroides[10];
+  struct Estacion estacion;
+  WINDOW *ventana;
+};
+
 
 /*hilos del cliente nave*/
 void* hilo_soporte_vital(void* arg);
 void* hilo_propulsion(void* arg);
 void* hilo_extraccion(void* arg);
 void* hilo_radar(void* arg);
-
+void *hilo_grafico(void *arg);
 /*funciones*/
 int trueque_estacion(struct Nave* nave);
 
