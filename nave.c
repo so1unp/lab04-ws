@@ -42,6 +42,12 @@ struct Mapa {
   struct Estacion estacion;
   WINDOW *ventana;
 };
+char nave[4][5] = {
+  " /\\",
+  "/\\",
+  "\\NN/",
+  " \\/"
+};
 
 
 /*hilos del cliente nave*/
