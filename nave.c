@@ -68,6 +68,7 @@ int main(int argc, char *argv[])
     //pthread_t hiloExtraccion;
     pthread_t hiloOxigeno;
 
+    //la cantidad de naves es 
     /*Inicializa la nave*/
     nave.oxigeno = 100;
     nave.combustible = 100;
@@ -180,6 +181,7 @@ int main(int argc, char *argv[])
  */
 void* hilo_extraccion(void* arg){
     struct Nave* nave = (struct Nave*) arg;
+    
     // Simula la extracción de minerales y el consumo de combustible
     printf("hilo_extraccion iniciado, pthread_self=%lu\n", (unsigned long)pthread_self());
     srand((unsigned int)time(NULL)); // Inicializa la semilla para la generación de números aleatorios
