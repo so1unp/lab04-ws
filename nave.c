@@ -21,6 +21,7 @@ int trueque_estacion(struct Nave *nave);
 int minerales_totales(struct Nave *nave);
 void inicializarVentanas_nave(struct Nave *arg);
 void inicializarHilos_nave(struct Nave *arg);
+void inicializar_nave(struct Nave *nave);
 
 int calcular_total_minerales(struct Nave *nave) {
   int total = 0;
@@ -47,17 +48,12 @@ int main(int argc, char *argv[]) {
 
   nave.oxigeno = 100;
   nave.combustible = 100;
-  nave.posX = 5;
-  nave.posY = 5;
   nave.velocidadMovimiento = 1;
   nave.combustibleGastadoMovimiento = 1;
   nave.ancho = 1;
   nave.largo = 1;
-  // esto de aca inicializa el array en puros 0
   memset(nave.bodegaMinerales, 0, sizeof(nave.bodegaMinerales));
-  // temporal, eliminar cuando se conecte el mailbox
   memset(nave.MatrizMapa, 0, sizeof(nave.MatrizMapa));
-  nave.MatrizMapa[nave.posX][nave.posY] = NAVE;
 
   // SEMAFOROS
   sem_unlink("mutex_nave");
@@ -72,32 +68,13 @@ int main(int argc, char *argv[]) {
     perror("sem_open mutex_pantalla");
     exit(EXIT_FAILURE);
   }
-  // COLA MENSAJES
-  //  crear cola propia para recibir
-  char nombre_cola_nave[64];
-  snprintf(nombre_cola_nave, sizeof(nombre_cola_nave),NOMBRE_COLA_NAVE_SERVIDOR,
-           getpid());
 
-  struct mq_attr attr_nave = {0, 10, sizeof(struct MensajeServidor), 0};
-  mqd_t mq_nave =
-      mq_open(nombre_cola_nave, O_CREAT | O_RDONLY, 0644, &attr_nave);
-  if (mq_nave == (mqd_t)-1) {
-    perror("mq_open nave");
-    exit(EXIT_FAILURE);
-  }
+  // RECIBO MAPA SERVIDOR
+  inicializar_nave(&nave);
 
   // notificar sv que se creo una nueva nave
   struct MensajeConexion conexion;
   conexion.pid = getpid();
-
-  mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR, O_WRONLY);
-  if (mq_servidor == (mqd_t)-1) {
-    perror("mq_open servidor");
-    exit(EXIT_FAILURE);
-  }
-
-  mq_send(mq_servidor, (char *)&conexion, sizeof(conexion), 0);
-  mq_close(mq_servidor);
 
   // GRAFICOS
   inicializarVentanas_nave(&nave);
@@ -341,6 +318,7 @@ void *hilo_grafico_nave(void *arg) {
   }
   return NULL;
 }
+
 // misma que servidor
 void inicializarVentanas_nave(struct Nave *nave) {
   initscr();
@@ -356,4 +334,102 @@ void inicializarVentanas_nave(struct Nave *nave) {
   nave->grafico.ventanaHud = newwin(6, VENTANA_SIZE_X, VENTANA_SIZE_Y, 0);
   box(nave->grafico.ventanaHud, 0, 0);
   wrefresh(nave->grafico.ventanaHud);
+}
+// mailbox para el respawn (esta deveria morirse aca ya que solo se usa una vez)
+void inicializar_nave(struct Nave *nave) {
+  char nombre_cola[64];
+  snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, getpid());
+
+  // crear cola propia para recibir el mapa
+  struct mq_attr attr;
+  memset(&attr, 0, sizeof(attr));
+  attr.mq_maxmsg = 10;
+  attr.mq_msgsize = sizeof(struct MensajeServidor);
+
+  mqd_t mq_nave = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
+  if (mq_nave == (mqd_t)-1) {
+    exit(EXIT_FAILURE);
+  }
+
+  // enviar pid al servidor
+  struct MensajeConexion msg;
+  msg.pid = getpid();
+
+  //apro
+  fflush(stdout);
+  mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_WRONLY);
+  if (mq_servidor == (mqd_t)-1) {
+    exit(EXIT_FAILURE);
+  }
+
+  if (mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0) == -1) {
+
+  }
+  mq_close(mq_servidor);
+
+ //espero matriz del sv
+  fflush(stdout);
+  struct MensajeServidor respuesta;
+  if (mq_receive(mq_nave, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
+  
+    exit(EXIT_FAILURE);
+  }
+  fflush(stdout);
+
+  memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
+
+  mq_close(mq_nave);
+  mq_unlink(nombre_cola);
+}
+
+// mailbox para el respawn
+void *hilo_cola_movimiento(struct Nave *nave) {
+  char nombre_cola[64];
+  snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, getpid());
+
+  // crear cola propia para recibir el mapa
+  struct mq_attr attr;
+  memset(&attr, 0, sizeof(attr));
+  attr.mq_maxmsg = 10;
+  attr.mq_msgsize = sizeof(struct MensajeServidor);
+
+  mqd_t mq_nave = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
+  if (mq_nave == (mqd_t)-1) {
+    perror("mq_open nave");
+    exit(EXIT_FAILURE);
+  }
+
+  // enviar pid al servidor
+  struct MensajeConexion msg;
+  msg.pid = getpid();
+
+  printf("abriendo cola servidor...\n");
+  fflush(stdout);
+  mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_WRONLY);
+  if (mq_servidor == (mqd_t)-1) {
+    perror("mq_open servidor");
+    exit(EXIT_FAILURE);
+  }
+
+  if (mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0) == -1) {
+    perror("mq_send servidor");
+  } else {
+    printf("mensaje enviado correctamente\n");
+  }
+  mq_close(mq_servidor);
+
+  printf("esperando matriz...\n");
+  fflush(stdout);
+  struct MensajeServidor respuesta;
+  if (mq_receive(mq_nave, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
+    perror("mq_receive mapa");
+    exit(EXIT_FAILURE);
+  }
+  printf("matriz recibida!\n");
+  fflush(stdout);
+
+  memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
+
+  mq_close(mq_nave);
+  mq_unlink(nombre_cola);
 }

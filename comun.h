@@ -12,9 +12,11 @@
 
 #define NOMBRE_COLA_ESTACION "/cola_estacion"
 #define NOMBRE_COLA_NAVE_SERVIDOR "/cola_nave_%d"
+#define NOMBRE_COLA_SERVIDOR_RESPAWN "/cola_servidor_respawn"
+#define NOMBRE_COLA_SERVIDOR_MOVIMIENTO "/cola_servidor_movimiento"
+#define NOMBRE_NAVE_RESPAWN "/cola_respawn_%d"
+#define NOMBRE_NAVE_MOVIMIENTO "/cola_moviento_%d"
 
-
-#define NOMBRE_COLA_RESPAWN "/cola_respawn"
 #define BODEGA_MINERALES_MAX 4
 
 // PA LO GRAFICO
@@ -78,7 +80,6 @@ struct Mapa {
 struct MensajeServidor {
   int MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
 };
-#define NOMBRE_COLA_SERVIDOR "/cola_servidor"
 
 struct MensajeConexion {
   pid_t pid;

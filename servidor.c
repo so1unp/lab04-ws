@@ -1,8 +1,10 @@
 #include <mqueue.h>
 #include <ncurses.h>
+#include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "comun.h"
 
@@ -11,7 +13,9 @@
 // hilos
 void *hilo_grafico(void *arg);
 
-void *hilo_respawn(void *arg);
+void *hilo_cola_respawn(void *arg);
+
+void *hilo_cola_movimiento(void *arg);
 // funciones
 void rellenarMapa(struct Mapa *arg);
 void inicializarVentanas(struct Mapa *arg);
@@ -30,8 +34,8 @@ int main(int argc, char *argv[]) {
     perror("pthread_create hilo_grafico");
     exit(EXIT_FAILURE);
   }
-  if (pthread_create(&hiloRespawn, NULL, hilo_respawn, &mapa) != 0) {
-    perror("pthread_create hilo_respawn");
+  if (pthread_create(&hiloRespawn, NULL, hilo_cola_respawn, &mapa) != 0) {
+    perror("pthread_create hilo_cola_respawn");
     exit(EXIT_FAILURE);
   }
   pthread_join(hiloGrafico, NULL);
@@ -107,7 +111,14 @@ void *hilo_grafico(void *arg) {
     }
 
     wrefresh(mapa->grafico.ventana);
+    wrefresh(mapa->grafico.ventanaHud);
+
+    pthread_mutex_unlock(&mapa->mutex_grafico);
+
+    usleep(100000);
   }
+
+  return NULL;
 }
 
 void inicializarVentanas(struct Mapa *mapa) {
@@ -135,102 +146,118 @@ void inicializarVentanas(struct Mapa *mapa) {
   wrefresh(mapa->grafico.ventanaHud);
 }
 
-// hilo para mailbox, cada vez que se reciba una pid de una nave, se debe enviar
-// como respuesta la matriz
-void *hilo_conexiones(void *arg) {
+
+void *hilo_cola_respawn(void *arg) {
   struct Mapa *mapa = (struct Mapa *)arg;
   struct MensajeConexion msg;
 
+  fprintf(stderr, "[RESPAWN] Hilo iniciado\n");
+  // formato de la cola de respawn servior y abirla
+
   struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
+
   mqd_t mq_conexiones =
-      mq_open(NOMBRE_COLA_SERVIDOR, O_CREAT | O_RDONLY, 0644, &attr);
+      mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_CREAT | O_RDONLY, 0644, &attr);
+
   if (mq_conexiones == (mqd_t)-1) {
-    perror("mq_open servidor");
     exit(1);
   }
 
+  // loop spawn recibe la id de la nave y devuelve la matriz del mapa
+
   while (1) {
-    // espera mensaje de una nave
+    // espero las id de las naves
     if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
-      perror("mq_receive");
+      perror("[RESPAWN] mq_receive");
       continue;
     }
 
     pthread_mutex_lock(&mapa->mutex_grafico);
 
-    // registra el pid
-    // (por ahora solo responde, lista de pids viene después)
-
-    // arma respuesta con el mapa actual
-    struct MensajeServidor respuesta;
-    memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
-
-    pthread_mutex_unlock(&mapa->mutex_grafico);
-
-    // abre la cola de esa nave y le manda el mapa
-    char nombre_cola[64];
-    snprintf(nombre_cola, sizeof(nombre_cola), "/cola_nave_%d", msg.pid);
-
-    mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
-    if (mq_nave == (mqd_t)-1) {
-      perror("mq_open nave");
-      continue;
-    }
-
-    mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0);
-    mq_close(mq_nave);
-  }
-  return NULL;
-}
-// hilo para mailbox, cada vez que se reciba una pid de una nave, se debe enviar
-// como respuesta la matriz, una sola vez por nave
-void *hilo_respawn(void *arg) {
-  struct Mapa *mapa = (struct Mapa *)arg;
-  struct MensajeConexion msg;
-
-  struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
-  mqd_t mq_conexiones =
-      mq_open(NOMBRE_COLA_RESPAWN, O_CREAT | O_RDONLY, 0644, &attr);
-  if (mq_conexiones == (mqd_t)-1) {
-    perror("mq_open servidor");
-    exit(1);
-  }
-
-  while (1) {
-    // espera mensaje de una nave
-    if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
-      perror("mq_receive");
-      continue;
-    }
-
-    pthread_mutex_lock(&mapa->mutex_grafico);
-
-    // registro nueva nave
     respawnNave(mapa, msg.pid);
 
-    // armo respuesta a la cola de la nave
+    // armo la respuesta para enviar a la nave
     struct MensajeServidor respuesta;
     memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
 
     pthread_mutex_unlock(&mapa->mutex_grafico);
 
-    // abre la cola de esa nave y le manda el mapa
     char nombre_cola[64];
-    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_COLA_NAVE_SERVIDOR , msg.pid);
+    // armo nombre de la cola a la que tengo que enviar
+    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, msg.pid);
 
     mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
+
     if (mq_nave == (mqd_t)-1) {
-      perror("mq_open nave");
+      perror("[RESPAWN] mq_open nave");
       continue;
     }
 
-    mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0);
+    if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
+      perror("[RESPAWN] mq_send");
+    }
+
     mq_close(mq_nave);
   }
+
   return NULL;
 }
-// METODO PARA APARICION DE LA NAVE
 
+void *hilo_cola_movimiento(void *arg) {
+  struct Mapa *mapa = (struct Mapa *)arg;
+  struct MensajeConexion msg;
+
+  fprintf(stderr, "[RESPAWN] Hilo iniciado\n");
+  // formato de la cola de respawn servior y abirla
+
+  struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
+
+  mqd_t mq_conexiones =
+      mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_CREAT | O_RDONLY, 0644, &attr);
+
+  if (mq_conexiones == (mqd_t)-1) {
+    exit(1);
+  }
+
+  // loop spawn recibe la id de la nave y devuelve la matriz del mapa
+
+  while (1) {
+    // espero las id de las naves
+    if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
+      perror("[RESPAWN] mq_receive");
+      continue;
+    }
+
+    pthread_mutex_lock(&mapa->mutex_grafico);
+
+    respawnNave(mapa, msg.pid);
+
+    // armo la respuesta para enviar a la nave
+    struct MensajeServidor respuesta;
+    memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
+
+    pthread_mutex_unlock(&mapa->mutex_grafico);
+
+    char nombre_cola[64];
+    // armo nombre de la cola a la que tengo que enviar
+    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, msg.pid);
+
+    mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
+
+    if (mq_nave == (mqd_t)-1) {
+      perror("[RESPAWN] mq_open nave");
+      continue;
+    }
+
+    if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
+      perror("[RESPAWN] mq_send");
+    }
+
+    mq_close(mq_nave);
+  }
+
+  return NULL;
+}
 void respawnNave(struct Mapa *mapa, pid_t pid) {
 
   int i = mapa->cant_naves;
@@ -244,7 +271,6 @@ void respawnNave(struct Mapa *mapa, pid_t pid) {
 
   mapa->cant_naves++;
 }
-
 // crear la extructura logica mapa
 // crear asteroides
 // dibujar mapa
