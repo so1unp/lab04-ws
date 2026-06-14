@@ -22,6 +22,7 @@ int minerales_totales(struct Nave *nave);
 void inicializarVentanas_nave(struct Nave *arg);
 void inicializarHilos_nave(struct Nave *arg);
 void inicializar_nave(struct Nave *nave);
+void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY);
 
 int calcular_total_minerales(struct Nave *nave) {
   int total = 0;
@@ -68,6 +69,25 @@ int main(int argc, char *argv[]) {
     perror("sem_open mutex_pantalla");
     exit(EXIT_FAILURE);
   }
+  char nombre_cola[64];
+  snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, getpid());
+
+  // crear cola propia para recibir el mapa
+  struct mq_attr attr;
+  memset(&attr, 0, sizeof(attr));
+  attr.mq_maxmsg = 10;
+  attr.mq_msgsize = sizeof(struct MensajeServidor);
+
+  mqd_t mq_nave = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
+  if (mq_nave == (mqd_t)-1) {
+    perror("mq_open nave");
+    exit(EXIT_FAILURE);
+  }
+  while (0) {
+  }
+
+  mq_close(mq_nave);
+  mq_unlink(nombre_cola);
 
   // RECIBO MAPA SERVIDOR
   inicializar_nave(&nave);
@@ -218,23 +238,21 @@ global y luego desbloquea
 */
 void movimientoPorTecla(void *arg, int xPos, int yPos) {
   struct Nave *nave = arg;
-  if (nave->combustible == 0) {
-    printf("Combustible agotado,no puedo moverme");
-
+  if (nave->combustible == 0)
     return;
-  }
 
   sem_wait(nave->sem_mutex);
-  // borro la posicion vieja de la matriz
-  nave->MatrizMapa[nave->posY][nave->posX] = 0;
-  nave->posX = xPos;
-  nave->posY = yPos;
-  // escribo la nueva
-  nave->MatrizMapa[nave->posY][nave->posX] = NAVE;
+  int posXVieja = nave->posX;
+  int posYVieja = nave->posY;
 
-  nave->combustible -= nave->combustibleGastadoMovimiento;
+  enviar_movimiento(nave, xPos, yPos);
+
+  // si la posición cambió, gastó combustible
+  if (nave->posX != posXVieja || nave->posY != posYVieja) {
+    nave->combustible -= nave->combustibleGastadoMovimiento;
+  }
+
   sem_post(nave->sem_mutex);
-  return;
 }
 /*Aca solo se ve que tecla para mandar las nuevas coordenadas actualizadas, se
  * le suma/resta la velocidad de movimiento*/
@@ -355,7 +373,7 @@ void inicializar_nave(struct Nave *nave) {
   struct MensajeConexion msg;
   msg.pid = getpid();
 
-  //apro
+  // apro
   fflush(stdout);
   mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_WRONLY);
   if (mq_servidor == (mqd_t)-1) {
@@ -363,73 +381,76 @@ void inicializar_nave(struct Nave *nave) {
   }
 
   if (mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0) == -1) {
-
   }
   mq_close(mq_servidor);
 
- //espero matriz del sv
+  // espero matriz del sv
   fflush(stdout);
   struct MensajeServidor respuesta;
   if (mq_receive(mq_nave, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
-  
+
     exit(EXIT_FAILURE);
   }
   fflush(stdout);
 
   memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
+  nave->posX = respuesta.posX;
+  nave->posY = respuesta.posY;
 
-  mq_close(mq_nave);
   mq_unlink(nombre_cola);
 }
+//
 
-// mailbox para el respawn
-void *hilo_cola_movimiento(struct Nave *nave) {
+void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
+  struct MensajeMovimiento mensaje;
+  mensaje.pid = getpid();
+  mensaje.posX = newPosX;
+  mensaje.posY = newPosY;
+
   char nombre_cola[64];
   snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, getpid());
 
-  // crear cola propia para recibir el mapa
   struct mq_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.mq_maxmsg = 10;
   attr.mq_msgsize = sizeof(struct MensajeServidor);
 
-  mqd_t mq_nave = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
-  if (mq_nave == (mqd_t)-1) {
-    perror("mq_open nave");
-    exit(EXIT_FAILURE);
+  mqd_t mq_propia = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
+  if (mq_propia == (mqd_t)-1) {
+    perror("mq_open propia");
+    return;
   }
+  fprintf(stderr, "[NAVE] cola propia abierta: %s\n", nombre_cola);
 
-  // enviar pid al servidor
-  struct MensajeConexion msg;
-  msg.pid = getpid();
-
-  printf("abriendo cola servidor...\n");
-  fflush(stdout);
-  mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_WRONLY);
+  mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_WRONLY);
   if (mq_servidor == (mqd_t)-1) {
     perror("mq_open servidor");
-    exit(EXIT_FAILURE);
+    mq_close(mq_propia);
+    mq_unlink(nombre_cola);
+    return;
   }
+  fprintf(stderr, "[NAVE] cola servidor abierta\n");
 
-  if (mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0) == -1) {
-    perror("mq_send servidor");
-  } else {
-    printf("mensaje enviado correctamente\n");
+  fprintf(stderr, "[NAVE] enviando movimiento pid=%d a (%d,%d)\n", mensaje.pid, newPosX, newPosY);
+  if (mq_send(mq_servidor, (char *)&mensaje, sizeof(mensaje), 0) == -1) {
+    perror("mq_send");
   }
   mq_close(mq_servidor);
 
-  printf("esperando matriz...\n");
-  fflush(stdout);
+  fprintf(stderr, "[NAVE] esperando respuesta...\n");
   struct MensajeServidor respuesta;
-  if (mq_receive(mq_nave, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
-    perror("mq_receive mapa");
-    exit(EXIT_FAILURE);
+  if (mq_receive(mq_propia, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
+    perror("mq_receive");
+    mq_close(mq_propia);
+    mq_unlink(nombre_cola);
+    return;
   }
-  printf("matriz recibida!\n");
-  fflush(stdout);
+  fprintf(stderr, "[NAVE] respuesta recibida pos=(%d,%d)\n", respuesta.posX, respuesta.posY);
 
   memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
+  nave->posX = respuesta.posX;
+  nave->posY = respuesta.posY;
 
-  mq_close(mq_nave);
+  mq_close(mq_propia);
   mq_unlink(nombre_cola);
 }

@@ -79,10 +79,15 @@ struct Mapa {
 
 struct MensajeServidor {
   int MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+  int posX, posY;  
 };
 
 struct MensajeConexion {
   pid_t pid;
+};
+struct MensajeMovimiento {
+  pid_t pid;
+  int posX, posY;
 };
 
 #endif /* COMUN_H */
