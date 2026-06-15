@@ -299,6 +299,8 @@ int trueque_estacion(struct Nave* nave){
     return 0;
 }
 
+
+//este hilo soporte
 void* hilo_soporte_vital(void* arg){
     struct Nave* nave = (struct Nave*) arg;
 

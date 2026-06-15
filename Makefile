@@ -2,7 +2,7 @@ CC=gcc
 BIN=./bin
 CFLAGS=-g -Wall -Wextra -Wshadow -Wconversion -Wunreachable-code -lncurses -lrt -lpthread
 
-PROG=nave estacion servidor
+PROG=nave estacion servidor prueba
 
 LIST=$(addprefix $(BIN)/, $(PROG))
 
