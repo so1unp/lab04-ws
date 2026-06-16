@@ -46,10 +46,13 @@ struct Mapa {
 
 /*hilos del cliente nave*/
 void* hilo_soporte_vital(void* arg);
-void* hilo_propulsion(void* arg);
+void* hilo_propulsion(void* arg); //este hilo se encarga de mover la nave segun las teclas w a s d, cada vez que se mueve, gasta combustible, si el combustible llega a 0, el hilo termina y se muestra un mensaje de que no hay combustible para moverse
 void* hilo_extraccion(void* arg);
 void* hilo_radar(void* arg);
 void *hilo_grafico(void *arg);
+
+
+
 /*funciones*/
 int trueque_estacion(struct Nave* nave);
 
@@ -175,6 +178,30 @@ int main(int argc, char *argv[])
     exit(EXIT_SUCCESS);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /**
  * Función para el hilo de extracción de minerales.
  * Esta función simula la extracción de minerales de asteroides adyacentes, el consumo de combustible y la actualización de la bodega de minerales de la nave.
@@ -202,7 +229,7 @@ void* hilo_extraccion(void* arg){
             printf("Extracción: no hay combustible.\n");
             sem_post(nave->sem_mutex);
             break; // Sale del bucle si no hay combustible
-        }
+        } 
 
         /*gasta combustible*/
         nave->combustible -= 1;
@@ -300,7 +327,10 @@ int trueque_estacion(struct Nave* nave){
 }
 
 
-//este hilo soporte
+//este hilo soporte vital se encarga de reducir el oxigeno cada cierto tiempo, si el oxigeno llega a 0, el hilo termina y se muestra un mensaje de game over en la pantalla
+//el combustible se reduce en el hilo de extraccion, si el combustible llega a 0, el hilo de extraccion termina y se muestra un mensaje de que no hay combustible para extraer
+//el combustible se gasta solo cuando se extrae, no se gasta por el movimiento, aunque esto se podria cambiar en el futuro para hacerlo mas realista, pero por ahora se mantiene asi para simplificar la logica del juego
+//el oxigeno se gasta cada segundo, sin importar si se esta extrayendo o no, esto simula el consumo de oxigeno por parte de la tripulacion de la nave, aunque en el futuro se podria hacer que el consumo de oxigeno sea mayor cuando se esta extrayendo, pero por ahora se mantiene constante para simplificar la logica del juego
 void* hilo_soporte_vital(void* arg){
     struct Nave* nave = (struct Nave*) arg;
 

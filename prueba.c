@@ -2,77 +2,67 @@
 #include <stdlib.h>
 #include <semaphore.h>
 #include <pthread.h>
-
+#include <unistd.h>
 
 struct Asteroides {
-    
-    int posX, posY;
+    int posX;
+    int posY;
     sem_t sem_mutex;
-   // int flag;
-   int Mutexio;
-   int semaforita;
+    int Mutexio;
+    int semaforita;
     int kernelio;
-    int   Deuterio;
+    int Deuterio;
 };
 
-struct Nave{ 
-
+struct Nave {
+    sem_t sem_mutex;
     int combustible;
-    int posX, posY;
+    int posX;
+    int posY;
     int bodegaMinerales[4];
 };
 
-   struct Asteroides mapa_asteroides[100];
+struct Asteroides mapa_asteroides[100];
+
 void asignar_valores(struct Asteroides *asteroide);
-void hilo_extraccion(void* arg, struct Asteroides *asteroide);
+void* hilo_extraccion(void* arg);
 
 int main() {
-    //para que sea una variab
-     
-
-    // 2. La Línea de Ensamblaje
     for (int i = 0; i < 5; i++) {
-        // Delegamos la asignación enviando la dirección de memoria
-        asignar_valores(&mapa_asteroides[i]); 
+        asignar_valores(&mapa_asteroides[i]);
     }
 
-    
     struct Nave nave;
-
-    //la cantidad de naves es 
-    /*Inicializa la nave*/
-    nave.combustible = 2;
+    nave.combustible = 3;
     nave.posX = 5;
     nave.posY = 5;
     for (int i = 0; i < 4; i++) {
         nave.bodegaMinerales[i] = 0;
     }
+    sem_init(&nave.sem_mutex, 0, 1);
 
-    //&nave es la dirección de memoria de la nave, que se pasa al hilo para que pueda modificar sus datos
-    hilo_extraccion(&nave, &mapa_asteroides[0]);
-    //para llamar a la funcion 
-    
+    pthread_t hiloExtraccion;
+    int errorHilo_extraccion = pthread_create(&hiloExtraccion, NULL, hilo_extraccion, &nave);
+    if (errorHilo_extraccion != 0) {
+        perror("pthread_create");
+        exit(EXIT_FAILURE);
+    }
+
+    pthread_join(hiloExtraccion, NULL);
+
+    exit(EXIT_SUCCESS);
     return 0;
-
-
-
 }
 
-
+//fabrica
 void asignar_valores(struct Asteroides *asteroide) {
-    // Validación de espacio vacío
-   
-    //no sobreponer
-        asteroide->posX = 3;
-        asteroide->posY = 3;
-
-        //random
+    asteroide->posX = 3;
+    asteroide->posY = 3;
     asteroide->Deuterio = 100;
     asteroide->Mutexio = 1;
     asteroide->semaforita = 1;
     asteroide->kernelio = 1;
 
-    //%d es el formato para imprimir enteros
     printf("Asignando valores al asteroide...\n");
     printf("posX: %d\n", asteroide->posX);
     printf("posY: %d\n", asteroide->posY);
@@ -81,70 +71,78 @@ void asignar_valores(struct Asteroides *asteroide) {
     printf("semaforita: %d\n", asteroide->semaforita);
     printf("kernelio: %d\n", asteroide->kernelio);
     printf("Inicializando semáforo del asteroide...\n");
-
-    //asteroide->flag = 1;
-    sem_init(&asteroide->sem_mutex, 1, 1);
-
     
+    sem_init(&asteroide->sem_mutex, 1, 1);
 }
 
 
 
-void hilo_extraccion(void* arg, struct Asteroides *asteroide){
+
+
+void* hilo_extraccion(void* arg) {
     struct Nave* nave = (struct Nave*) arg;
-    
+    //recibo
+    struct Asteroides* asteroide = &mapa_asteroides[0];
 
-  
-    //nave-> asteroide
-    //el hilo recibe la nave, y el asteroide al cual va a minar
+    sem_wait(&asteroide->sem_mutex);
+    asteroide->Deuterio = 40;
+    sem_post(&asteroide->sem_mutex);
 
-            //extraer
-            int indiceMIneral;
-            asteroide = &asteroide[0]; // Asumiendo que estás minando el primer asteroide del arreglo
-            asteroide->Deuterio = 4;
+    int i = 0;
+    int count = 0;
+    printf("--------------------------------------------------------------\n");
+    while (1) {
 
-   for(int i =0; i<10; i++){
+        i++;
+        sleep(2);
+        int asteroideAdyacente = rand() % 2;
 
-
-     if (nave->combustible <= 0) {
-            printf("Extracción: no hay combustible.\n");
-
-            asignar_valores(&mapa_asteroides[6] ); // ‘mapa_asteroides’ undeclared (first use in this function); did you mean ‘Asteroides’?
-            //el error se debe a que el arreglo mapa_asteroides no está declarado dentro de esta función, por lo que no es accesible. Para solucionar esto, puedes pasar el arreglo mapa_asteroides como argumento a la función hilo_extraccion, o declarar el arreglo como una variable global para que sea accesible desde cualquier función.
-            break; // Sale del bucle si no hay combustible
+        if (!asteroideAdyacente) {
+            printf("Extracción: numero %d, no hay asteroides adyacentes.\n", i);
+            continue;
         }
 
-       
-    
-            indiceMIneral = i;
-            nave->bodegaMinerales[indiceMIneral] ++;        
-            asteroide->Deuterio -= 1; // Simula la extracción de un mineral del asteroide
-            
+        sem_wait(&nave->sem_mutex);
+        
+        //nave a asteroide 
+        if (nave->combustible <= 0) {
+            printf("Extracción: numero %d, no hay combustible.\n", i);
+            asignar_valores(&mapa_asteroides[6]);
+            sem_post(&nave->sem_mutex);
+            break;
+        }
 
-            //Imprimir recursos extraidos
-            printf("Extracción: numero %d, Combustible restante: %d\n", i, nave->combustible);
-            printf("Minerales en bodega: %d, %d, %d, %d\n", nave->bodegaMinerales[0], nave->bodegaMinerales[1], nave->bodegaMinerales[2], nave->bodegaMinerales[3]);
-            //imprimir ultimos datos del asteroide
+        
+        nave->combustible -= 1;
+        //extraer
+        int indiceMIneral = count;
+        nave->bodegaMinerales[indiceMIneral]++;
+        
 
-            printf("Datos del asteroide después de la extracción:\n");
-            printf("Deuterio: %d\n", asteroide->Deuterio);
-            printf("Mutexio: %d\n", asteroide->Mutexio);
-            printf("semaforita: %d\n", asteroide->semaforita);
-            printf("kernelio: %d\n", asteroide->kernelio);
-            printf("///////////////////////////////////////////\n");
+        sem_wait(&asteroide->sem_mutex);
+        asteroide->Deuterio -= 1;
+        count++;
+        printf("Extracción: numero %d, cantidad total extraída: %d, Combustible restante: %d\n", i,count, nave->combustible);
+        count--;
+        printf("Minerales en bodega: %d, %d, %d, %d\n", nave->bodegaMinerales[0], nave->bodegaMinerales[1], nave->bodegaMinerales[2], nave->bodegaMinerales[3]);
+        printf("Datos del asteroide después de la extracción:\n");
+        printf("Deuterio: %d\n", asteroide->Deuterio);
+        printf("Mutexio: %d\n", asteroide->Mutexio);
+        printf("semaforita: %d\n", asteroide->semaforita);
+        printf("kernelio: %d\n", asteroide->kernelio);
 
+        printf("--------------------------------------------------------------\n");
 
-         if (asteroide->Deuterio == 0) {
+        //matar 
+        if (asteroide->Deuterio == 0) {
             printf("El asteroide se ha agotado.\n");
-                break; // Sale del bucle si el asteroide se ha agotado
-            }
+            break;
+        }
 
-        nave->combustible -= 1; // Simula el consumo de combustible por la extracción 
-   }
-
-   
- 
-   
-
-
+        sem_post(&asteroide->sem_mutex);
+        sem_post(&nave->sem_mutex);
+        count++;
+        
+    }
+    return NULL;
 }
