@@ -1,12 +1,12 @@
+#include "comun.h"
 #include <mqueue.h>
 #include <ncurses.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
-
-#include "comun.h"
 
 // para ser mas claro para la generacion de mapa el 0 es para vacio, 1 para el
 // jugador, 2 para la nave y 3 para asteroides
@@ -17,9 +17,14 @@ void *hilo_cola_respawn(void *arg);
 
 void *hilo_cola_movimiento(void *arg);
 // funciones
+
+struct NaveConectada *
+containsNavesConectadas(struct NaveConectada naves_conectadas[], int size,
+                        int valor);
 void rellenarMapa(struct Mapa *arg);
 void inicializarVentanas(struct Mapa *arg);
 void inicializarHilos(struct Mapa *arg);
+void gameOver(struct Mapa *mapa, struct NaveConectada *nave);
 struct MensajeServidor respawnNave(struct Mapa *arg, pid_t pid);
 struct MensajeServidor moverNave(struct Mapa *arg,
                                  struct MensajeMovimiento msg);
@@ -63,14 +68,15 @@ void rellenarMapa(struct Mapa *mapa) {
     do {
       x = rand() % VENTANA_SIZE_X;
       y = rand() % VENTANA_SIZE_Y;
-    } while (mapa->MatrizMapa[y][x] != 0); // si está ocupado, vuelve a elegir
+    } while (mapa->MatrizMapa[y][x].estructuraMapa !=
+             0); // si está ocupado, vuelve a elegir
 
     mapa->asteroides[i].posX = x;
     mapa->asteroides[i].posY = y;
     mapa->asteroides[i].ancho = 1;
     mapa->asteroides[i].largo = 1;
     mapa->asteroides[i].minerales = 100;
-    mapa->MatrizMapa[y][x] = ASTEROIDE;
+    mapa->MatrizMapa[y][x].estructuraMapa = ASTEROIDE;
   }
 
   // Inicializar estaciones
@@ -79,14 +85,14 @@ void rellenarMapa(struct Mapa *mapa) {
     do {
       x = rand() % 25;
       y = rand() % 25;
-    } while (mapa->MatrizMapa[y][x] != 0);
+    } while (mapa->MatrizMapa[y][x].estructuraMapa != 0);
 
     // borrar despues
     mapa->estaciones[i].posX = x;
     mapa->estaciones[i].posY = y;
     mapa->estaciones[i].ancho = 1;
     mapa->estaciones[i].largo = 1;
-    mapa->MatrizMapa[y][x] = ESTACION;
+    mapa->MatrizMapa[y][x].estructuraMapa = ESTACION;
   }
 }
 void *hilo_grafico(void *arg) {
@@ -103,16 +109,18 @@ void *hilo_grafico(void *arg) {
 
     for (int y = 0; y < VENTANA_SIZE_Y; y++) {
       for (int x = 0; x < VENTANA_SIZE_X; x++) {
-        switch (mapa->MatrizMapa[y][x]) {
-        case NAVE:
+
+        if (mapa->MatrizMapa[y][x].nave) {
           mvwprintw(mapa->grafico.ventana, y, x, "x");
-          break;
-        case ASTEROIDE:
-          mvwprintw(mapa->grafico.ventana, y, x, "*");
-          break;
-        case ESTACION:
-          mvwprintw(mapa->grafico.ventana, y, x, "E");
-          break;
+        } else {
+          switch (mapa->MatrizMapa[y][x].estructuraMapa) {
+          case ASTEROIDE:
+            mvwprintw(mapa->grafico.ventana, y, x, "*");
+            break;
+          case ESTACION:
+            mvwprintw(mapa->grafico.ventana, y, x, "E");
+            break;
+          }
         }
       }
     }
@@ -157,7 +165,6 @@ void *hilo_cola_respawn(void *arg) {
   struct Mapa *mapa = (struct Mapa *)arg;
   struct MensajeConexion msg;
 
-  fprintf(stderr, "[RESPAWN] Hilo iniciado\n");
   // formato de la cola de respawn servior y abirla
 
   struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
@@ -177,86 +184,74 @@ void *hilo_cola_respawn(void *arg) {
       perror("[RESPAWN] mq_receive");
       continue;
     }
-
     pthread_mutex_lock(&mapa->mutex_grafico);
+    struct NaveConectada *nave = containsNavesConectadas(
+        mapa->naves_conectadas, mapa->cant_naves, msg.pid);
+    if (nave == NULL) {
 
-    // armo la respuesta para enviar a la nave
-    struct MensajeServidor respuesta = respawnNave(mapa, msg.pid);
+      struct MensajeServidor respuesta = respawnNave(mapa, msg.pid);
 
-    pthread_mutex_unlock(&mapa->mutex_grafico);
+      pthread_mutex_unlock(&mapa->mutex_grafico);
+      // armo la respuesta para enviar a la nave
 
-    char nombre_cola[64];
-    // armo nombre de la cola a la que tengo que enviar
-    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, msg.pid);
+      char nombre_cola[64];
+      // armo nombre de la cola a la que tengo que enviar
+      snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, msg.pid);
 
-    mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
+      mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
 
-    if (mq_nave == (mqd_t)-1) {
-      perror("[RESPAWN] mq_open nave");
-      continue;
+      if (mq_nave == (mqd_t)-1) {
+        perror("[RESPAWN] mq_open nave");
+        continue;
+      }
+
+      if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
+        perror("[RESPAWN] mq_send");
+      }
+
+      mq_close(mq_nave);
+    } else {
+      gameOver(mapa, nave);
+      pthread_mutex_unlock(&mapa->mutex_grafico);
     }
-
-    if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
-      perror("[RESPAWN] mq_send");
-    }
-
-    mq_close(mq_nave);
   }
 
   return NULL;
 }
 
-// void *hilo_cola_movimiento(void *arg) {
-//   struct Mapa *mapa = (struct Mapa *)arg;
-//   struct MensajeMovimiento msg;
+struct NaveConectada *
+containsNavesConectadas(struct NaveConectada naves_conectadas[], int size,
+                        int valor) {
+  for (int i = 0; i < size; i++)
+    if (naves_conectadas[i].pid == valor)
+      return &naves_conectadas[i];
+  return NULL;
+}
+void gameOver(struct Mapa *mapa, struct NaveConectada *nave) {
+  char nombre[64];
+  //primero elimino las colas
+  snprintf(nombre, sizeof(nombre), NOMBRE_NAVE_RESPAWN, nave->pid);
+  mq_unlink(nombre);
 
-//   fprintf(stderr, "[Movimiento] Hilo iniciado\n");
+  snprintf(nombre, sizeof(nombre), NOMBRE_NAVE_MOVIMIENTO, nave->pid);
+  mq_unlink(nombre);
+  //luego lo elimino del mapa
+  mapa->MatrizMapa[nave->posY][nave->posX].nave = false;
+  //encuentro y lo saco del array de naves.
+  int desdeAcaAcomodar = -1;
+  for (int i = 0; i < mapa->cant_naves; i++) {
+    if (mapa->naves_conectadas[i].pid == nave->pid) {
+      desdeAcaAcomodar = i;
+      break;
+    }
+  }
 
-//   struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
-
-//   mqd_t mq_conexiones =
-//       mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_CREAT | O_RDONLY, 0644, &attr);
-
-//   if (mq_conexiones == (mqd_t)-1) {
-//     exit(1);
-//   }
-
-//   // loop spawn recibe la id de la nave y devuelve la matriz del mapa
-
-//   while (1) {
-//     // espero las id de las naves
-//     if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
-//       perror("[RESPAWN] mq_receive");
-//       continue;
-//     }
-
-//     pthread_mutex_lock(&mapa->mutex_grafico);
-
-//     // armo la respuesta para enviar a la nave
-//     struct MensajeServidor respuesta = moverNave(mapa, msg);
-
-//     pthread_mutex_unlock(&mapa->mutex_grafico);
-
-//     char nombre_cola[64];
-//     // armo nombre de la cola a la que tengo que enviar
-//     snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, msg.pid);
-
-//     mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
-
-//     if (mq_nave == (mqd_t)-1) {
-//       perror("[RESPAWN] mq_open nave");
-//       continue;
-//     }
-
-//     if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
-//       perror("[RESPAWN] mq_send");
-//     }
-
-//     mq_close(mq_nave);
-//   }
-
-//   return NULL;
-// }
+  for (int i = desdeAcaAcomodar; i < mapa->cant_naves - 1; i++) {
+    mapa->naves_conectadas[i] = mapa->naves_conectadas[i + 1];
+  }
+  //decremento la cantidad de naves
+  mapa->cant_naves--;
+}
 struct MensajeServidor respawnNave(struct Mapa *mapa, pid_t pid) {
   struct MensajeServidor respuesta;
 
@@ -268,7 +263,7 @@ struct MensajeServidor respawnNave(struct Mapa *mapa, pid_t pid) {
   mapa->naves_conectadas[i].pid = pid;
   mapa->naves_conectadas[i].posX = posX;
   mapa->naves_conectadas[i].posY = posY;
-  mapa->MatrizMapa[posY][posX] = NAVE;
+  mapa->MatrizMapa[posY][posX].nave = TRUE;
 
   mapa->cant_naves++;
   memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
@@ -306,19 +301,20 @@ struct MensajeServidor moverNave(struct Mapa *mapa,
     nuevaPosY = VENTANA_SIZE_Y - 1;
 
   // Si hay otra nave, no deja avanzar
-  int lugarMatriz = mapa->MatrizMapa[nuevaPosY][nuevaPosX];
+  int lugarMatriz = mapa->MatrizMapa[nuevaPosY][nuevaPosX].nave;
   if (lugarMatriz != NAVE) {
 
     // borra posición vieja
     mapa->MatrizMapa[mapa->naves_conectadas[naveExiste].posY]
-                    [mapa->naves_conectadas[naveExiste].posX] = 0;
+                    [mapa->naves_conectadas[naveExiste].posX]
+                        .nave = FALSE;
 
     // actualiza posición
     mapa->naves_conectadas[naveExiste].posX = nuevaPosX;
     mapa->naves_conectadas[naveExiste].posY = nuevaPosY;
 
     // escribe posición nueva
-    mapa->MatrizMapa[nuevaPosY][nuevaPosX] = NAVE;
+    mapa->MatrizMapa[nuevaPosY][nuevaPosX].nave = TRUE;
   }
   // armo respuesta
   memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
@@ -335,8 +331,6 @@ void *hilo_cola_movimiento(void *arg) {
   struct Mapa *mapa = (struct Mapa *)arg;
   struct MensajeMovimiento msg;
 
-  fprintf(stderr, "[SV-MOV] Hilo iniciado\n");
-
   struct mq_attr attr = {0, 10, sizeof(struct MensajeMovimiento), 0};
   mqd_t mq_conexiones =
       mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_CREAT | O_RDONLY, 0644, &attr);
@@ -345,24 +339,19 @@ void *hilo_cola_movimiento(void *arg) {
     perror("[SV-MOV] mq_open");
     exit(1);
   }
-  fprintf(stderr, "[SV-MOV] cola abierta, esperando mensajes...\n");
 
   while (1) {
     if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
       perror("[SV-MOV] mq_receive");
       continue;
     }
-    fprintf(stderr, "[SV-MOV] recibido pid=%d destino=(%d,%d)\n", msg.pid, msg.posX, msg.posY);
 
     pthread_mutex_lock(&mapa->mutex_grafico);
     struct MensajeServidor respuesta = moverNave(mapa, msg);
     pthread_mutex_unlock(&mapa->mutex_grafico);
 
-    fprintf(stderr, "[SV-MOV] nueva pos=(%d,%d)\n", respuesta.posX, respuesta.posY);
-
     char nombre_cola[64];
     snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, msg.pid);
-    fprintf(stderr, "[SV-MOV] abriendo cola respuesta: %s\n", nombre_cola);
 
     mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
 
@@ -373,8 +362,6 @@ void *hilo_cola_movimiento(void *arg) {
 
     if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
       perror("[SV-MOV] mq_send");
-    } else {
-      fprintf(stderr, "[SV-MOV] respuesta enviada\n");
     }
 
     mq_close(mq_nave);

@@ -22,6 +22,7 @@ int minerales_totales(struct Nave *nave);
 void inicializarVentanas_nave(struct Nave *arg);
 void inicializarHilos_nave(struct Nave *arg);
 void inicializar_nave(struct Nave *nave);
+void gameOver_nave(struct Nave *nave);
 void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY);
 
 int calcular_total_minerales(struct Nave *nave) {
@@ -92,9 +93,7 @@ int main(int argc, char *argv[]) {
   // RECIBO MAPA SERVIDOR
   inicializar_nave(&nave);
 
-  // notificar sv que se creo una nueva nave
-  struct MensajeConexion conexion;
-  conexion.pid = getpid();
+  //
 
   // GRAFICOS
   inicializarVentanas_nave(&nave);
@@ -124,12 +123,13 @@ int main(int argc, char *argv[]) {
   }
 
   // Game over
+  gameOver_nave(&nave);
   sem_wait(nave.mutex_pantalla);
   mvprintw(0, 0, "GAME OVER - oxigeno:%d combustible:%d", nave.oxigeno,
            nave.combustible);
   refresh();
   sem_post(nave.mutex_pantalla);
-  napms(2000);
+  napms(20000);
 
   // Cleanup
   pthread_cancel(hiloSoporteVital);
@@ -316,16 +316,18 @@ void *hilo_grafico_nave(void *arg) {
     box(nave->grafico.ventana, 0, 0);
     for (int y = 0; y < VENTANA_SIZE_Y; y++) {
       for (int x = 0; x < VENTANA_SIZE_X; x++) {
-        switch (nave->MatrizMapa[y][x]) {
-        case NAVE:
+        if (nave->MatrizMapa[y][x].nave) {
           mvwprintw(nave->grafico.ventana, y, x, "x");
-          break;
-        case ASTEROIDE:
-          mvwprintw(nave->grafico.ventana, y, x, "*");
-          break;
-        case ESTACION:
-          mvwprintw(nave->grafico.ventana, y, x, "E");
-          break;
+        } else {
+          switch (nave->MatrizMapa[y][x].estructuraMapa) {
+
+          case ASTEROIDE:
+            mvwprintw(nave->grafico.ventana, y, x, "*");
+            break;
+          case ESTACION:
+            mvwprintw(nave->grafico.ventana, y, x, "E");
+            break;
+          }
         }
       }
     }
@@ -353,7 +355,8 @@ void inicializarVentanas_nave(struct Nave *nave) {
   box(nave->grafico.ventanaHud, 0, 0);
   wrefresh(nave->grafico.ventanaHud);
 }
-// mailbox para el respawn (esta deveria morirse aca ya que solo se usa una vez)
+// mailbox para el respawn (esta deveria morirse aca ya que solo se usa una
+// vez)
 void inicializar_nave(struct Nave *nave) {
   char nombre_cola[64];
   snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, getpid());
@@ -399,6 +402,21 @@ void inicializar_nave(struct Nave *nave) {
 
   mq_unlink(nombre_cola);
 }
+// Pal despawn
+void gameOver_nave(struct Nave *nave) {
+
+  struct MensajeConexion msg;
+  msg.pid = getpid();
+
+  mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_WRONLY);
+  if (mq_servidor == (mqd_t)-1) {
+    exit(EXIT_FAILURE);
+  }
+
+  if (mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0) == -1) {
+  }
+  mq_close(mq_servidor);
+}
 //
 
 void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
@@ -420,7 +438,6 @@ void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
     perror("mq_open propia");
     return;
   }
-  fprintf(stderr, "[NAVE] cola propia abierta: %s\n", nombre_cola);
 
   mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_WRONLY);
   if (mq_servidor == (mqd_t)-1) {
@@ -429,23 +446,20 @@ void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
     mq_unlink(nombre_cola);
     return;
   }
-  fprintf(stderr, "[NAVE] cola servidor abierta\n");
 
-  fprintf(stderr, "[NAVE] enviando movimiento pid=%d a (%d,%d)\n", mensaje.pid, newPosX, newPosY);
   if (mq_send(mq_servidor, (char *)&mensaje, sizeof(mensaje), 0) == -1) {
     perror("mq_send");
   }
   mq_close(mq_servidor);
 
-  fprintf(stderr, "[NAVE] esperando respuesta...\n");
   struct MensajeServidor respuesta;
-  if (mq_receive(mq_propia, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
+  if (mq_receive(mq_propia, (char *)&respuesta, sizeof(respuesta), NULL) ==
+      -1) {
     perror("mq_receive");
     mq_close(mq_propia);
     mq_unlink(nombre_cola);
     return;
   }
-  fprintf(stderr, "[NAVE] respuesta recibida pos=(%d,%d)\n", respuesta.posX, respuesta.posY);
 
   memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
   nave->posX = respuesta.posX;

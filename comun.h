@@ -53,6 +53,10 @@ struct NaveConectada {
   pid_t pid;
   int posX, posY;
 };
+struct LugarMatriz {
+  int estructuraMapa;
+  bool nave;
+};
 struct Nave {
   int oxigeno;
   int combustible;
@@ -64,7 +68,7 @@ struct Nave {
   int ancho, largo;
   sem_t *mutex_pantalla;
   struct Grafico grafico;
-  int MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+  struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
 };
 
 struct Mapa {
@@ -72,19 +76,20 @@ struct Mapa {
   struct Estacion estaciones[ESTACION_MAX_SV];
   struct Grafico grafico;
   pthread_mutex_t mutex_grafico;
-  int MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+  struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
   struct NaveConectada naves_conectadas[NAVE_MAX_SV];
   int cant_naves;
 };
 
 struct MensajeServidor {
-  int MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
-  int posX, posY;  
+  struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+  int posX, posY;
 };
 
 struct MensajeConexion {
   pid_t pid;
 };
+
 struct MensajeMovimiento {
   pid_t pid;
   int posX, posY;
