@@ -18,6 +18,8 @@
 #define NOMBRE_NAVE_MOVIMIENTO "/cola_moviento_%d"
 
 #define BODEGA_MINERALES_MAX 4
+//VARIABLE MEMORIA COMPARTIDA MAPA
+#define NOMBRE_SHM_MAPA "/shm_mapa"
 
 // PA LO GRAFICO
 
@@ -27,9 +29,9 @@
 #define ASTEROIDE 3
 #define NAVE 1
 // servidor ajustes
-#define ESTACION_MAX_SV 2
-#define ASTEROIDE_MAX_SV 3
-#define NAVE_MAX_SV 1
+#define ESTACION_MAX_SV 3
+#define ASTEROIDE_MAX_SV 6
+#define NAVE_MAX_SV 3
 
 struct Asteroides {
   int minerales;
@@ -55,7 +57,7 @@ struct NaveConectada {
 };
 struct LugarMatriz {
   int estructuraMapa;
-  bool nave;
+  pid_t pid_nave;
 };
 struct Nave {
   int oxigeno;
@@ -68,7 +70,18 @@ struct Nave {
   int ancho, largo;
   sem_t *mutex_pantalla;
   struct Grafico grafico;
-  struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+};
+struct MatrizCompartida {
+    struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+    sem_t mutex;  
+};
+struct ArgsMapa {
+  struct Mapa *mapa;
+  struct MatrizCompartida *shm;
+};
+struct ArgsNave {
+  struct Nave *nave;
+  struct MatrizCompartida *shm;
 };
 
 struct Mapa {
@@ -76,15 +89,12 @@ struct Mapa {
   struct Estacion estaciones[ESTACION_MAX_SV];
   struct Grafico grafico;
   pthread_mutex_t mutex_grafico;
-  struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
   struct NaveConectada naves_conectadas[NAVE_MAX_SV];
   int cant_naves;
 };
 
-struct MensajeServidor {
-  struct LugarMatriz MatrizMapa[VENTANA_SIZE_Y][VENTANA_SIZE_X];
-  int posX, posY;
-};
+
+
 
 struct MensajeConexion {
   pid_t pid;

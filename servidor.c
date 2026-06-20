@@ -1,65 +1,81 @@
 #include "comun.h"
+#include <fcntl.h>
 #include <mqueue.h>
 #include <ncurses.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
 // para ser mas claro para la generacion de mapa el 0 es para vacio, 1 para el
 // jugador, 2 para la nave y 3 para asteroides
+
 // hilos
 void *hilo_grafico(void *arg);
-
 void *hilo_cola_respawn(void *arg);
-
 void *hilo_cola_movimiento(void *arg);
-// funciones
 
+// funciones
 struct NaveConectada *
 containsNavesConectadas(struct NaveConectada naves_conectadas[], int size,
                         int valor);
-void rellenarMapa(struct Mapa *arg);
+void rellenarMapa(struct Mapa *mapa, struct MatrizCompartida *shm);
 void inicializarVentanas(struct Mapa *arg);
-void inicializarHilos(struct Mapa *arg);
-void gameOver(struct Mapa *mapa, struct NaveConectada *nave);
-struct MensajeServidor respawnNave(struct Mapa *arg, pid_t pid);
-struct MensajeServidor moverNave(struct Mapa *arg,
-                                 struct MensajeMovimiento msg);
+void gameOver(struct ArgsMapa *args, struct NaveConectada *nave);
+void respawnNave(struct ArgsMapa *args, pid_t pid);
+void moverNave(struct ArgsMapa *args, struct MensajeMovimiento msg);
 
 int main(int argc, char *argv[]) {
   struct Mapa mapa;
 
-  rellenarMapa(&mapa);
+  // ACA SE INICIALIZA LA MATRIZ COMPARTIDA
+  struct MatrizCompartida *shm;
+  int fd = shm_open(NOMBRE_SHM_MAPA, O_CREAT | O_RDWR, 0666);
+  ftruncate(fd, sizeof(struct MatrizCompartida));
+  shm = mmap(NULL, sizeof(struct MatrizCompartida), PROT_READ | PROT_WRITE,
+             MAP_SHARED, fd, 0);
+  close(fd);
+  sem_init(&shm->mutex, 1, 1); // 1 = compartido entre procesos
+
+  rellenarMapa(&mapa, shm);
   inicializarVentanas(&mapa);
 
   pthread_t hiloGrafico, hiloRespawn, hiloMovimiento;
 
-  if (pthread_create(&hiloGrafico, NULL, hilo_grafico, &mapa) != 0) {
+  struct ArgsMapa args = {&mapa, shm};
+
+  if (pthread_create(&hiloGrafico, NULL, hilo_grafico, &args) != 0) {
     perror("pthread_create hilo_grafico");
     exit(EXIT_FAILURE);
   }
-  if (pthread_create(&hiloRespawn, NULL, hilo_cola_respawn, &mapa) != 0) {
+  if (pthread_create(&hiloRespawn, NULL, hilo_cola_respawn, &args) != 0) {
     perror("pthread_create hilo_cola_respawn");
     exit(EXIT_FAILURE);
   }
-  if (pthread_create(&hiloMovimiento, NULL, hilo_cola_movimiento, &mapa) != 0) {
+  if (pthread_create(&hiloMovimiento, NULL, hilo_cola_movimiento, &args) != 0) {
     perror("pthread_create hilo_cola_movimiento");
     exit(EXIT_FAILURE);
   }
+
   pthread_join(hiloGrafico, NULL);
   pthread_join(hiloRespawn, NULL);
   pthread_join(hiloMovimiento, NULL);
 
-  void rellenarMapa(struct Mapa * arg);
+  sem_destroy(&shm->mutex);
+  munmap(shm, sizeof(struct MatrizCompartida));
+  shm_unlink(NOMBRE_SHM_MAPA);
+
+  endwin();
   exit(EXIT_SUCCESS);
 }
+
 // temporal,solo por ahora, despues se reemplazaria por la logica de
 // inicializacion del mapa
-void rellenarMapa(struct Mapa *mapa) {
-  memset(mapa->MatrizMapa, 0, sizeof(mapa->MatrizMapa));
+void rellenarMapa(struct Mapa *mapa, struct MatrizCompartida *shm) {
+  memset(shm->MatrizMapa, 0, sizeof(shm->MatrizMapa));
   mapa->cant_naves = 0;
 
   // Inicializar asteroides
@@ -68,38 +84,49 @@ void rellenarMapa(struct Mapa *mapa) {
     do {
       x = rand() % VENTANA_SIZE_X;
       y = rand() % VENTANA_SIZE_Y;
-    } while (mapa->MatrizMapa[y][x].estructuraMapa !=
-             0); // si está ocupado, vuelve a elegir
+    } while (shm->MatrizMapa[y][x].estructuraMapa !=
+             0); // SI ESTA OCUPADO VUELVE A ELEGIR
 
     mapa->asteroides[i].posX = x;
     mapa->asteroides[i].posY = y;
     mapa->asteroides[i].ancho = 1;
     mapa->asteroides[i].largo = 1;
     mapa->asteroides[i].minerales = 100;
-    mapa->MatrizMapa[y][x].estructuraMapa = ASTEROIDE;
+    shm->MatrizMapa[y][x].estructuraMapa = ASTEROIDE;
+  }
+  for (int y = 0; y < VENTANA_SIZE_Y; y++) {
+    for (int x = 0; x < VENTANA_SIZE_X; x++) {
+      shm->MatrizMapa[y][x].pid_nave = -1;
+    }
   }
 
   // Inicializar estaciones
   for (int i = 0; i < ESTACION_MAX_SV; i++) {
     int x, y;
     do {
-      x = rand() % 25;
-      y = rand() % 25;
-    } while (mapa->MatrizMapa[y][x].estructuraMapa != 0);
+      x = rand() % VENTANA_SIZE_X;
+      y = rand() % VENTANA_SIZE_Y;
+    } while (shm->MatrizMapa[y][x].estructuraMapa != 0);
 
-    // borrar despues
     mapa->estaciones[i].posX = x;
     mapa->estaciones[i].posY = y;
     mapa->estaciones[i].ancho = 1;
     mapa->estaciones[i].largo = 1;
-    mapa->MatrizMapa[y][x].estructuraMapa = ESTACION;
+    shm->MatrizMapa[y][x].estructuraMapa = ESTACION;
   }
 }
+
 void *hilo_grafico(void *arg) {
-  struct Mapa *mapa = (struct Mapa *)arg;
+  struct ArgsMapa *args = (struct ArgsMapa *)arg;
+  struct Mapa *mapa = args->mapa;
+  struct MatrizCompartida *shm = args->shm;
 
   while (1) {
-    pthread_mutex_lock(&mapa->mutex_grafico);
+    
+    struct LugarMatriz snapshot[VENTANA_SIZE_Y][VENTANA_SIZE_X];
+    sem_wait(&shm->mutex);
+    memcpy(snapshot, shm->MatrizMapa, sizeof(snapshot));
+    sem_post(&shm->mutex); 
 
     werase(mapa->grafico.ventanaHud);
     box(mapa->grafico.ventanaHud, 0, 0);
@@ -109,11 +136,10 @@ void *hilo_grafico(void *arg) {
 
     for (int y = 0; y < VENTANA_SIZE_Y; y++) {
       for (int x = 0; x < VENTANA_SIZE_X; x++) {
-
-        if (mapa->MatrizMapa[y][x].nave) {
+        if (snapshot[y][x].pid_nave != -1) {
           mvwprintw(mapa->grafico.ventana, y, x, "x");
         } else {
-          switch (mapa->MatrizMapa[y][x].estructuraMapa) {
+          switch (snapshot[y][x].estructuraMapa) {
           case ASTEROIDE:
             mvwprintw(mapa->grafico.ventana, y, x, "*");
             break;
@@ -128,20 +154,18 @@ void *hilo_grafico(void *arg) {
     wrefresh(mapa->grafico.ventana);
     wrefresh(mapa->grafico.ventanaHud);
 
-    pthread_mutex_unlock(&mapa->mutex_grafico);
-
     usleep(100000);
   }
 
   return NULL;
 }
-
 void inicializarVentanas(struct Mapa *mapa) {
   initscr();
   cbreak();
   noecho();
   curs_set(FALSE);
   keypad(stdscr, TRUE);
+  pthread_mutex_init(&mapa->mutex_grafico, NULL);
 
   // ventana principal del jugador
   mapa->grafico.ventana = newwin(VENTANA_SIZE_Y, // alto
@@ -162,57 +186,40 @@ void inicializarVentanas(struct Mapa *mapa) {
 }
 
 void *hilo_cola_respawn(void *arg) {
-  struct Mapa *mapa = (struct Mapa *)arg;
+  struct ArgsMapa *args = (struct ArgsMapa *)arg;
+  struct Mapa *mapa = args->mapa;
+  struct MatrizCompartida *shm = args->shm;
   struct MensajeConexion msg;
 
-  // formato de la cola de respawn servior y abirla
-
+  // formato de la cola de respawn servidor y abirla
   struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
-
   mqd_t mq_conexiones =
       mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_CREAT | O_RDONLY, 0644, &attr);
-
   if (mq_conexiones == (mqd_t)-1) {
+    perror("[RESPAWN] mq_open");
     exit(1);
   }
 
   // loop spawn recibe la id de la nave y devuelve la matriz del mapa
-
   while (1) {
     // espero las id de las naves
     if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
       perror("[RESPAWN] mq_receive");
       continue;
     }
-    pthread_mutex_lock(&mapa->mutex_grafico);
+
     struct NaveConectada *nave = containsNavesConectadas(
         mapa->naves_conectadas, mapa->cant_naves, msg.pid);
+
     if (nave == NULL) {
+      sem_wait(&shm->mutex);
+      respawnNave(args, msg.pid);
+      sem_post(&shm->mutex);
 
-      struct MensajeServidor respuesta = respawnNave(mapa, msg.pid);
-
-      pthread_mutex_unlock(&mapa->mutex_grafico);
-      // armo la respuesta para enviar a la nave
-
-      char nombre_cola[64];
-      // armo nombre de la cola a la que tengo que enviar
-      snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, msg.pid);
-
-      mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
-
-      if (mq_nave == (mqd_t)-1) {
-        perror("[RESPAWN] mq_open nave");
-        continue;
-      }
-
-      if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
-        perror("[RESPAWN] mq_send");
-      }
-
-      mq_close(mq_nave);
     } else {
-      gameOver(mapa, nave);
-      pthread_mutex_unlock(&mapa->mutex_grafico);
+      sem_wait(&shm->mutex);
+      gameOver(args, nave);
+      sem_post(&shm->mutex);
     }
   }
 
@@ -227,17 +234,13 @@ containsNavesConectadas(struct NaveConectada naves_conectadas[], int size,
       return &naves_conectadas[i];
   return NULL;
 }
-void gameOver(struct Mapa *mapa, struct NaveConectada *nave) {
-  char nombre[64];
-  //primero elimino las colas
-  snprintf(nombre, sizeof(nombre), NOMBRE_NAVE_RESPAWN, nave->pid);
-  mq_unlink(nombre);
 
-  snprintf(nombre, sizeof(nombre), NOMBRE_NAVE_MOVIMIENTO, nave->pid);
-  mq_unlink(nombre);
-  //luego lo elimino del mapa
-  mapa->MatrizMapa[nave->posY][nave->posX].nave = false;
-  //encuentro y lo saco del array de naves.
+void gameOver(struct ArgsMapa *args, struct NaveConectada *nave) {
+  struct Mapa *mapa = args->mapa;
+  struct MatrizCompartida *shm = args->shm;
+  // luego lo elimino del mapa
+  shm->MatrizMapa[nave->posY][nave->posX].pid_nave = -1;
+  // encuentro y lo saco del array de naves.
   int desdeAcaAcomodar = -1;
   for (int i = 0; i < mapa->cant_naves; i++) {
     if (mapa->naves_conectadas[i].pid == nave->pid) {
@@ -245,15 +248,20 @@ void gameOver(struct Mapa *mapa, struct NaveConectada *nave) {
       break;
     }
   }
+  if (desdeAcaAcomodar == -1)
+    return;
 
   for (int i = desdeAcaAcomodar; i < mapa->cant_naves - 1; i++) {
     mapa->naves_conectadas[i] = mapa->naves_conectadas[i + 1];
   }
-  //decremento la cantidad de naves
+  // decremento la cantidad de naves
   mapa->cant_naves--;
+
 }
-struct MensajeServidor respawnNave(struct Mapa *mapa, pid_t pid) {
-  struct MensajeServidor respuesta;
+
+void respawnNave(struct ArgsMapa *args, pid_t pid) {
+  struct Mapa *mapa = args->mapa;
+  struct MatrizCompartida *shm = args->shm;
 
   int i = mapa->cant_naves;
   int estacion_Comienzo = rand() % ESTACION_MAX_SV;
@@ -263,17 +271,15 @@ struct MensajeServidor respawnNave(struct Mapa *mapa, pid_t pid) {
   mapa->naves_conectadas[i].pid = pid;
   mapa->naves_conectadas[i].posX = posX;
   mapa->naves_conectadas[i].posY = posY;
-  mapa->MatrizMapa[posY][posX].nave = TRUE;
+  shm->MatrizMapa[posY][posX].pid_nave = pid;
 
   mapa->cant_naves++;
-  memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
-  respuesta.posX = posX;
-  respuesta.posY = posY;
-  return respuesta;
 }
+
 // aca calculo la nueva pos para devolver el movimiento a la nave
-struct MensajeServidor moverNave(struct Mapa *mapa,
-                                 struct MensajeMovimiento msg) {
+void moverNave(struct ArgsMapa *args, struct MensajeMovimiento msg) {
+  struct Mapa *mapa = args->mapa;
+  struct MatrizCompartida *shm = args->shm;
   int naveExiste = -1;
   int nuevaPosX = msg.posX;
   int nuevaPosY = msg.posY;
@@ -288,84 +294,63 @@ struct MensajeServidor moverNave(struct Mapa *mapa,
     perror("NAVE NO EXISTE");
     exit(EXIT_FAILURE);
   }
-  struct MensajeServidor respuesta;
 
-  // si choco con los vordes volteo y aparece del otro lado
-  if (nuevaPosX >= VENTANA_SIZE_X)
-    nuevaPosX = 0;
-  if (nuevaPosX < 0)
+  // si choco con los bordes volteo y aparece del otro lado
+  if (nuevaPosX >= VENTANA_SIZE_X - 1)
+    nuevaPosX = 1;
+  if (nuevaPosX < 1)
     nuevaPosX = VENTANA_SIZE_X - 1;
-  if (nuevaPosY >= VENTANA_SIZE_Y)
-    nuevaPosY = 0;
-  if (nuevaPosY < 0)
+  if (nuevaPosY >= VENTANA_SIZE_Y - 1)
+    nuevaPosY = 1;
+  if (nuevaPosY < 1)
     nuevaPosY = VENTANA_SIZE_Y - 1;
 
   // Si hay otra nave, no deja avanzar
-  int lugarMatriz = mapa->MatrizMapa[nuevaPosY][nuevaPosX].nave;
-  if (lugarMatriz != NAVE) {
-
+  if (shm->MatrizMapa[nuevaPosY][nuevaPosX].pid_nave == -1) {
     // borra posición vieja
-    mapa->MatrizMapa[mapa->naves_conectadas[naveExiste].posY]
-                    [mapa->naves_conectadas[naveExiste].posX]
-                        .nave = FALSE;
+    shm->MatrizMapa[mapa->naves_conectadas[naveExiste].posY]
+                   [mapa->naves_conectadas[naveExiste].posX]
+                       .pid_nave = -1;
 
     // actualiza posición
     mapa->naves_conectadas[naveExiste].posX = nuevaPosX;
     mapa->naves_conectadas[naveExiste].posY = nuevaPosY;
 
     // escribe posición nueva
-    mapa->MatrizMapa[nuevaPosY][nuevaPosX].nave = TRUE;
+    shm->MatrizMapa[nuevaPosY][nuevaPosX].pid_nave = msg.pid;
   }
-  // armo respuesta
-  memcpy(respuesta.MatrizMapa, mapa->MatrizMapa, sizeof(mapa->MatrizMapa));
-  respuesta.posX = mapa->naves_conectadas[naveExiste].posX;
-  respuesta.posY = mapa->naves_conectadas[naveExiste].posY;
-  return respuesta;
 }
-// crear la extructura logica mapa
-// crear asteroides
-// dibujar mapa
-// memoria compartida
-// mailbox+
+
+
 void *hilo_cola_movimiento(void *arg) {
-  struct Mapa *mapa = (struct Mapa *)arg;
+  struct ArgsMapa *args = (struct ArgsMapa *)arg;
+  struct Mapa *mapa = args->mapa;
+  struct MatrizCompartida *shm = args->shm;
   struct MensajeMovimiento msg;
 
   struct mq_attr attr = {0, 10, sizeof(struct MensajeMovimiento), 0};
   mqd_t mq_conexiones =
       mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_CREAT | O_RDONLY, 0644, &attr);
-
   if (mq_conexiones == (mqd_t)-1) {
     perror("[SV-MOV] mq_open");
     exit(1);
   }
 
+
+
   while (1) {
+
     if (mq_receive(mq_conexiones, (char *)&msg, sizeof(msg), NULL) == -1) {
       perror("[SV-MOV] mq_receive");
       continue;
     }
 
-    pthread_mutex_lock(&mapa->mutex_grafico);
-    struct MensajeServidor respuesta = moverNave(mapa, msg);
-    pthread_mutex_unlock(&mapa->mutex_grafico);
+ 
 
-    char nombre_cola[64];
-    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, msg.pid);
+    sem_wait(&shm->mutex);
+    moverNave(args, msg);
+    sem_post(&shm->mutex);
 
-    mqd_t mq_nave = mq_open(nombre_cola, O_WRONLY);
-
-    if (mq_nave == (mqd_t)-1) {
-      perror("[SV-MOV] mq_open nave");
-      continue;
-    }
-
-    if (mq_send(mq_nave, (char *)&respuesta, sizeof(respuesta), 0) == -1) {
-      perror("[SV-MOV] mq_send");
-    }
-
-    mq_close(mq_nave);
   }
-
   return NULL;
 }

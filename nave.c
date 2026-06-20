@@ -7,8 +7,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 /*hilos del cliente nave*/
@@ -45,6 +47,20 @@ int main(int argc, char *argv[]) {
   (void)argv;
 
   struct Nave nave;
+  struct MatrizCompartida *shm;
+
+  int fd = shm_open(NOMBRE_SHM_MAPA, O_RDWR, 0666); // sin O_CREAT
+  if (fd == -1) {
+    perror("shm_open");
+    exit(1);
+  }
+
+  shm = mmap(NULL, sizeof(struct MatrizCompartida), PROT_READ | PROT_WRITE,
+             MAP_SHARED, fd, 0);
+  if (shm == MAP_FAILED) {
+    perror("mmap");
+    exit(1);
+  }
 
   // Inicializar nave
 
@@ -55,7 +71,6 @@ int main(int argc, char *argv[]) {
   nave.ancho = 1;
   nave.largo = 1;
   memset(nave.bodegaMinerales, 0, sizeof(nave.bodegaMinerales));
-  memset(nave.MatrizMapa, 0, sizeof(nave.MatrizMapa));
 
   // SEMAFOROS
   sem_unlink("mutex_nave");
@@ -70,33 +85,32 @@ int main(int argc, char *argv[]) {
     perror("sem_open mutex_pantalla");
     exit(EXIT_FAILURE);
   }
-  char nombre_cola[64];
-  snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, getpid());
-
-  // crear cola propia para recibir el mapa
-  struct mq_attr attr;
-  memset(&attr, 0, sizeof(attr));
-  attr.mq_maxmsg = 10;
-  attr.mq_msgsize = sizeof(struct MensajeServidor);
-
-  mqd_t mq_nave = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
-  if (mq_nave == (mqd_t)-1) {
-    perror("mq_open nave");
-    exit(EXIT_FAILURE);
-  }
-  while (0) {
-  }
-
-  mq_close(mq_nave);
-  mq_unlink(nombre_cola);
-
-  // RECIBO MAPA SERVIDOR
-  inicializar_nave(&nave);
 
   //
 
   // GRAFICOS
+  struct ArgsNave args = {&nave, shm};
   inicializarVentanas_nave(&nave);
+  // RECIBO MAPA SERVIDOR
+  inicializar_nave(&nave);
+  // esperar a que el servidor me coloque
+  int found = 0;
+
+  while (!found) {
+    for (int y = 0; y < VENTANA_SIZE_Y; y++) {
+      for (int x = 0; x < VENTANA_SIZE_X; x++) {
+        if (shm->MatrizMapa[y][x].pid_nave == getpid()) {
+          nave.posX = x;
+          nave.posY = y;
+          found = 1;
+          break;
+        }
+      }
+      if (found)
+        break;
+    }
+    usleep(100000);
+  }
   // HILOS
   pthread_t hiloSoporteVital, hiloPropulsion, hiloExtraccion, hiloGrafico;
 
@@ -104,7 +118,7 @@ int main(int argc, char *argv[]) {
     perror("pthread_create hilo_soporte_vital");
     exit(EXIT_FAILURE);
   }
-  if (pthread_create(&hiloPropulsion, NULL, hilo_propulsion, &nave) != 0) {
+  if (pthread_create(&hiloPropulsion, NULL, hilo_propulsion, &args) != 0) {
     perror("pthread_create hilo_propulsion");
     exit(EXIT_FAILURE);
   }
@@ -112,14 +126,27 @@ int main(int argc, char *argv[]) {
     perror("pthread_create hilo_extraccion");
     exit(EXIT_FAILURE);
   }
-  if (pthread_create(&hiloGrafico, NULL, hilo_grafico_nave, &nave) != 0) {
+  if (pthread_create(&hiloGrafico, NULL, hilo_grafico_nave, &args) != 0) {
     perror("pthread_create hilo_grafico");
     exit(EXIT_FAILURE);
   }
 
   // Loop principal — termina cuando muere la nave
+  // en main, proteger la actualización de posición
   while (nave.oxigeno > 0 && nave.combustible > 0) {
     napms(100);
+    found = 0;
+    for (int y = 0; y < VENTANA_SIZE_Y && !found; y++) {
+      for (int x = 0; x < VENTANA_SIZE_X; x++) {
+        if (shm->MatrizMapa[y][x].pid_nave == getpid()) {
+          sem_wait(nave.sem_mutex);
+          nave.posX = x;
+          nave.posY = y;
+          sem_post(nave.sem_mutex);
+          found = 1;
+        }
+      }
+    }
   }
 
   // Game over
@@ -146,6 +173,7 @@ int main(int argc, char *argv[]) {
   sem_close(nave.mutex_pantalla);
   sem_unlink("mutex_nave");
   sem_unlink("mutex_pantalla");
+  char nombre[64];
 
   endwin();
   exit(EXIT_SUCCESS);
@@ -240,29 +268,27 @@ void movimientoPorTecla(void *arg, int xPos, int yPos) {
   struct Nave *nave = arg;
   if (nave->combustible == 0)
     return;
+  enviar_movimiento(nave, xPos, yPos); 
 
   sem_wait(nave->sem_mutex);
-  int posXVieja = nave->posX;
-  int posYVieja = nave->posY;
-
-  enviar_movimiento(nave, xPos, yPos);
-
-  // si la posición cambió, gastó combustible
-  if (nave->posX != posXVieja || nave->posY != posYVieja) {
-    nave->combustible -= nave->combustibleGastadoMovimiento;
-  }
+  
+  nave->combustible -= nave->combustibleGastadoMovimiento;
 
   sem_post(nave->sem_mutex);
 }
 /*Aca solo se ve que tecla para mandar las nuevas coordenadas actualizadas, se
  * le suma/resta la velocidad de movimiento*/
 void *hilo_propulsion(void *arg) {
-  struct Nave *nave = arg;
+  struct ArgsNave *args = (struct ArgsNave *)arg;
+  struct MatrizCompartida *shm = args->shm;
+  struct Nave *nave = args->nave;
   // w a s d
   int tecla;
 
   while (1) {
     tecla = getch();
+    mvprintw(0, 0, "tecla=%d   ", tecla);
+    refresh();
     switch (tecla) {
     case 'w':
       movimientoPorTecla(nave, nave->posX,
@@ -284,43 +310,62 @@ void *hilo_propulsion(void *arg) {
   }
   return NULL;
 }
-// version de hilo grafico para la nave, se fusiono radar con el nuevo
-// hilografico para manejar todo de una
 void *hilo_grafico_nave(void *arg) {
-  struct Nave *nave = (struct Nave *)arg;
+  struct ArgsNave *args = (struct ArgsNave *)arg;
+  struct MatrizCompartida *shm = args->shm;
+  struct Nave *nave = args->nave;
   char arr[11];
   char arr2[11];
+  int iteracion = 0;
+
+
+  refresh();
+  sleep(1);
 
   while (1) {
-    sem_wait(nave->sem_mutex);
+    refresh();
 
-    int mitad = (nave->oxigeno + 9) / 10;
-    int mitad2 = (nave->combustible + 9) / 10;
+    sem_wait(nave->sem_mutex);
+    refresh();
+
+    
+    int oxigeno = nave->oxigeno;
+    int combustible = nave->combustible;
+    int posX = nave->posX;
+    int posY = nave->posY;
+    int minerales = calcular_total_minerales(nave);
+
+    sem_post(nave->sem_mutex);  
+    refresh();
+
+    int mitad = (oxigeno + 9) / 10;
+    int mitad2 = (combustible + 9) / 10;
     for (int k = 0; k < 10; k++)
       arr[k] = k < mitad ? '=' : ' ';
     for (int k = 0; k < 10; k++)
       arr2[k] = k < mitad2 ? '=' : ' ';
     arr[10] = arr2[10] = '\0';
 
+    mvprintw(2, 0, "[GRAFICO] ox=%d comb=%d pos=(%d,%d) min=%d     ",
+             oxigeno, combustible, posX, posY, minerales);
+    refresh();
+
     werase(nave->grafico.ventanaHud);
     box(nave->grafico.ventanaHud, 0, 0);
     mvwprintw(nave->grafico.ventanaHud, 1, 1, "Oxigeno:     [%s]", arr);
     mvwprintw(nave->grafico.ventanaHud, 2, 1, "Combustible: [%s]", arr2);
-    mvwprintw(nave->grafico.ventanaHud, 3, 1, "Pos: (%2d, %2d)  ", nave->posX,
-              nave->posY);
-    mvwprintw(nave->grafico.ventanaHud, 4, 1, "Minerales:   %d",
-              calcular_total_minerales(nave));
+    mvwprintw(nave->grafico.ventanaHud, 3, 1, "Pos: (%2d, %2d)  ", posX, posY);
+    mvwprintw(nave->grafico.ventanaHud, 4, 1, "Minerales:   %d", minerales);
     wrefresh(nave->grafico.ventanaHud);
 
     werase(nave->grafico.ventana);
     box(nave->grafico.ventana, 0, 0);
     for (int y = 0; y < VENTANA_SIZE_Y; y++) {
       for (int x = 0; x < VENTANA_SIZE_X; x++) {
-        if (nave->MatrizMapa[y][x].nave) {
+        if (shm->MatrizMapa[y][x].pid_nave != -1) {
           mvwprintw(nave->grafico.ventana, y, x, "x");
         } else {
-          switch (nave->MatrizMapa[y][x].estructuraMapa) {
-
+          switch (shm->MatrizMapa[y][x].estructuraMapa) {
           case ASTEROIDE:
             mvwprintw(nave->grafico.ventana, y, x, "*");
             break;
@@ -333,11 +378,67 @@ void *hilo_grafico_nave(void *arg) {
     }
     wrefresh(nave->grafico.ventana);
 
-    sem_post(nave->sem_mutex);
+    refresh();
+
     usleep(100000);
   }
   return NULL;
 }
+// version de hilo grafico para la nave, se fusiono radar con el nuevo
+// hilografico para manejar todo de una
+// void *hilo_grafico_nave(void *arg) {
+//   struct ArgsNave *args = (struct ArgsNave *)arg;
+//   struct MatrizCompartida *shm = args->shm;
+//   struct Nave *nave = args->nave;
+//   char arr[11];
+//   char arr2[11];
+
+//   while (1) {
+//     sem_wait(nave->sem_mutex);
+
+//     int mitad = (nave->oxigeno + 9) / 10;
+//     int mitad2 = (nave->combustible + 9) / 10;
+//     for (int k = 0; k < 10; k++)
+//       arr[k] = k < mitad ? '=' : ' ';
+//     for (int k = 0; k < 10; k++)
+//       arr2[k] = k < mitad2 ? '=' : ' ';
+//     arr[10] = arr2[10] = '\0';
+
+//     werase(nave->grafico.ventanaHud);
+//     box(nave->grafico.ventanaHud, 0, 0);
+//     mvwprintw(nave->grafico.ventanaHud, 1, 1, "Oxigeno:     [%s]", arr);
+//     mvwprintw(nave->grafico.ventanaHud, 2, 1, "Combustible: [%s]", arr2);
+//     mvwprintw(nave->grafico.ventanaHud, 3, 1, "Pos: (%2d, %2d)  ", nave->posX,
+//               nave->posY);
+//     mvwprintw(nave->grafico.ventanaHud, 4, 1, "Minerales:   %d",
+//               calcular_total_minerales(nave));
+//     wrefresh(nave->grafico.ventanaHud);
+
+//     werase(nave->grafico.ventana);
+//     box(nave->grafico.ventana, 0, 0);
+//     for (int y = 0; y < VENTANA_SIZE_Y; y++) {
+//       for (int x = 0; x < VENTANA_SIZE_X; x++) {
+//         if (shm->MatrizMapa[y][x].pid_nave != -1) {
+//           mvwprintw(nave->grafico.ventana, y, x, "x");
+//         } else {
+//           switch (shm->MatrizMapa[y][x].estructuraMapa) {
+
+//           case ASTEROIDE:
+//             mvwprintw(nave->grafico.ventana, y, x, "*");
+//             break;
+//           case ESTACION:
+//             mvwprintw(nave->grafico.ventana, y, x, "E");
+//             break;
+//           }
+//         }
+//       }
+//     }
+//     wrefresh(nave->grafico.ventana);
+
+//     usleep(100000);
+//   }
+//   return NULL;
+// }
 
 // misma que servidor
 void inicializarVentanas_nave(struct Nave *nave) {
@@ -358,50 +459,18 @@ void inicializarVentanas_nave(struct Nave *nave) {
 // mailbox para el respawn (esta deveria morirse aca ya que solo se usa una
 // vez)
 void inicializar_nave(struct Nave *nave) {
-  char nombre_cola[64];
-  snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_RESPAWN, getpid());
-
-  // crear cola propia para recibir el mapa
-  struct mq_attr attr;
-  memset(&attr, 0, sizeof(attr));
-  attr.mq_maxmsg = 10;
-  attr.mq_msgsize = sizeof(struct MensajeServidor);
-
-  mqd_t mq_nave = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
-  if (mq_nave == (mqd_t)-1) {
-    exit(EXIT_FAILURE);
-  }
-
-  // enviar pid al servidor
   struct MensajeConexion msg;
   msg.pid = getpid();
 
-  // apro
-  fflush(stdout);
   mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_WRONLY);
   if (mq_servidor == (mqd_t)-1) {
+    perror("mq_open servidor respawn");
     exit(EXIT_FAILURE);
   }
-
-  if (mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0) == -1) {
-  }
+  mq_send(mq_servidor, (char *)&msg, sizeof(msg), 0);
   mq_close(mq_servidor);
-
-  // espero matriz del sv
-  fflush(stdout);
-  struct MensajeServidor respuesta;
-  if (mq_receive(mq_nave, (char *)&respuesta, sizeof(respuesta), NULL) == -1) {
-
-    exit(EXIT_FAILURE);
-  }
-  fflush(stdout);
-
-  memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
-  nave->posX = respuesta.posX;
-  nave->posY = respuesta.posY;
-
-  mq_unlink(nombre_cola);
 }
+
 // Pal despawn
 void gameOver_nave(struct Nave *nave) {
 
@@ -425,46 +494,11 @@ void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
   mensaje.posX = newPosX;
   mensaje.posY = newPosY;
 
-  char nombre_cola[64];
-  snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_NAVE_MOVIMIENTO, getpid());
-
-  struct mq_attr attr;
-  memset(&attr, 0, sizeof(attr));
-  attr.mq_maxmsg = 10;
-  attr.mq_msgsize = sizeof(struct MensajeServidor);
-
-  mqd_t mq_propia = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0644, &attr);
-  if (mq_propia == (mqd_t)-1) {
-    perror("mq_open propia");
-    return;
-  }
-
   mqd_t mq_servidor = mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_WRONLY);
   if (mq_servidor == (mqd_t)-1) {
-    perror("mq_open servidor");
-    mq_close(mq_propia);
-    mq_unlink(nombre_cola);
+    perror("mq_open servidor movimiento");
     return;
   }
-
-  if (mq_send(mq_servidor, (char *)&mensaje, sizeof(mensaje), 0) == -1) {
-    perror("mq_send");
-  }
+  mq_send(mq_servidor, (char *)&mensaje, sizeof(mensaje), 0);
   mq_close(mq_servidor);
-
-  struct MensajeServidor respuesta;
-  if (mq_receive(mq_propia, (char *)&respuesta, sizeof(respuesta), NULL) ==
-      -1) {
-    perror("mq_receive");
-    mq_close(mq_propia);
-    mq_unlink(nombre_cola);
-    return;
-  }
-
-  memcpy(nave->MatrizMapa, respuesta.MatrizMapa, sizeof(nave->MatrizMapa));
-  nave->posX = respuesta.posX;
-  nave->posY = respuesta.posY;
-
-  mq_close(mq_propia);
-  mq_unlink(nombre_cola);
 }
