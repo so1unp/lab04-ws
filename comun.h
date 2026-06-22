@@ -18,8 +18,8 @@
 #define NOMBRE_COLA_NAVE_SERVIDOR "/cola_nave_%d"
 #define NOMBRE_COLA_SERVIDOR_RESPAWN "/cola_servidor_respawn"
 #define NOMBRE_COLA_SERVIDOR_MOVIMIENTO "/cola_servidor_movimiento"
-#define NOMBRE_NAVE_RESPAWN "/cola_respawn_%d"
-#define NOMBRE_NAVE_MOVIMIENTO "/cola_moviento_%d"
+
+
 
 #define BODEGA_MINERALES_MAX 4
 //VARIABLE MEMORIA COMPARTIDA MAPA
