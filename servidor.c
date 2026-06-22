@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <math.h>
 
 // para ser mas claro para la generacion de mapa el 0 es para vacio, 1 para el
 // jugador, 2 para la nave y 3 para asteroides
@@ -27,8 +28,21 @@ void inicializarVentanas(struct Mapa *arg);
 void gameOver(struct ArgsMapa *args, struct NaveConectada *nave);
 void respawnNave(struct ArgsMapa *args, pid_t pid);
 void moverNave(struct ArgsMapa *args, struct MensajeMovimiento msg);
+void colocarEstaciones(struct Mapa *mapa, struct MatrizCompartida *shm);
 
 int main(int argc, char *argv[]) {
+
+
+  // --- AGREGAR ESTO AL PRINCIPIO ---
+  // Limpieza preventiva de la caché/restos de ejecuciones anteriores
+  shm_unlink(NOMBRE_SHM_MAPA);
+  mq_unlink(NOMBRE_COLA_SERVIDOR_RESPAWN);
+  mq_unlink(NOMBRE_COLA_SERVIDOR_MOVIMIENTO);
+  // ---------------------------------
+
+
+     // Inicializa la semilla aleatoria usando la hora actual del sistema
+  srand(time(NULL));
   struct Mapa mapa;
 
   // ACA SE INICIALIZA LA MATRIZ COMPARTIDA
@@ -75,25 +89,46 @@ int main(int argc, char *argv[]) {
 // temporal,solo por ahora, despues se reemplazaria por la logica de
 // inicializacion del mapa
 void rellenarMapa(struct Mapa *mapa, struct MatrizCompartida *shm) {
+
   memset(shm->MatrizMapa, 0, sizeof(shm->MatrizMapa));
   mapa->cant_naves = 0;
 
-  // Inicializar asteroides
-  for (int i = 0; i < ASTEROIDE_MAX_SV; i++) {
+  int cantidad_asteroides = ASTEROIDE_MAX_SV;
+
+  
+
+  // --- 2. GENERAR ASTEROIDES CON TUS MINERALES ---
+  for (int i = 0; i < cantidad_asteroides; i++) {
     int x, y;
+    
+    // Esta es la parte vital del servidor: busca un lugar vacío
     do {
       x = rand() % VENTANA_SIZE_X;
       y = rand() % VENTANA_SIZE_Y;
-    } while (shm->MatrizMapa[y][x].estructuraMapa !=
-             0); // SI ESTA OCUPADO VUELVE A ELEGIR
+    } while (shm->MatrizMapa[y][x].estructuraMapa != 0); 
 
+    // Guardamos la posición
     mapa->asteroides[i].posX = x;
     mapa->asteroides[i].posY = y;
     mapa->asteroides[i].ancho = 1;
     mapa->asteroides[i].largo = 1;
-    mapa->asteroides[i].minerales = 100;
+
+    // AQUI AGREGAMOS TU LÓGICA DE PRUEBA.C:
+    mapa->asteroides[i].Deuterio = rand() % 100 + 1;
+    mapa->asteroides[i].Mutexio = rand() % 100 + 1;
+    mapa->asteroides[i].semaforita = rand() % 100 + 1;
+    mapa->asteroides[i].kernelio = rand() % 100 + 1;
+    
+    // Inicializamos el semáforo del asteroide
+    sem_init(&mapa->asteroides[i].sem_mutex, 1, 1);
+
+    // Finalmente, lo registramos en la matriz compartida
     shm->MatrizMapa[y][x].estructuraMapa = ASTEROIDE;
   }
+    mapa->cant_asteroides = cantidad_asteroides;
+  
+
+  //aca 
   for (int y = 0; y < VENTANA_SIZE_Y; y++) {
     for (int x = 0; x < VENTANA_SIZE_X; x++) {
       shm->MatrizMapa[y][x].pid_nave = -1;
@@ -101,21 +136,11 @@ void rellenarMapa(struct Mapa *mapa, struct MatrizCompartida *shm) {
   }
 
   // Inicializar estaciones
-  for (int i = 0; i < ESTACION_MAX_SV; i++) {
-    int x, y;
-    do {
-      x = rand() % VENTANA_SIZE_X;
-      y = rand() % VENTANA_SIZE_Y;
-    } while (shm->MatrizMapa[y][x].estructuraMapa != 0);
-
-    mapa->estaciones[i].posX = x;
-    mapa->estaciones[i].posY = y;
-    mapa->estaciones[i].ancho = 1;
-    mapa->estaciones[i].largo = 1;
-    shm->MatrizMapa[y][x].estructuraMapa = ESTACION;
-  }
+  //la var Estacion_max esta inicia
+  colocarEstaciones(mapa, shm);
 }
 
+//el servidro muere 
 void *hilo_grafico(void *arg) {
   struct ArgsMapa *args = (struct ArgsMapa *)arg;
   struct Mapa *mapa = args->mapa;
@@ -235,12 +260,62 @@ containsNavesConectadas(struct NaveConectada naves_conectadas[], int size,
   return NULL;
 }
 
+
+//aca se elimina la nave del mapa, y del array de naves conectadas, y se decrementa la cantidad de naves, para que el servidor sepa que esa nave ya no esta mas, y pueda volver a aparecer en el mapa si se vuelve a conectar
+//las coordenadas de esa nave no son g
 void gameOver(struct ArgsMapa *args, struct NaveConectada *nave) {
   struct Mapa *mapa = args->mapa;
   struct MatrizCompartida *shm = args->shm;
-  // luego lo elimino del mapa
-  shm->MatrizMapa[nave->posY][nave->posX].pid_nave = -1;
-  // encuentro y lo saco del array de naves.
+
+  // 1. GUARDAMOS LAS COORDENADAS ANTES DE BORRAR LA NAVE
+  int x_muerte = nave->posX;
+  int y_muerte = nave->posY;
+
+  // 2. BORRAMOS LA NAVE DE LA MATRIZ (Tu código original)
+  shm->MatrizMapa[y_muerte][x_muerte].pid_nave = -1;
+
+  // ---------------------------------------------------------
+  // 3. INICIO DE LA TRANSFORMACIÓN: DE NAVE A ESCOMBROS
+  // ---------------------------------------------------------
+  
+  // Usamos la cantidad actual de asteroides como el "índice" para el nuevo
+  int indice_nuevo_ast = mapa->cant_asteroides;
+      
+      // A. Asignamos la posición exacta donde murió la nave
+      mapa->asteroides[indice_nuevo_ast].posX = x_muerte;
+      mapa->asteroides[indice_nuevo_ast].posY = y_muerte;
+      mapa->asteroides[indice_nuevo_ast].ancho = 1;
+      mapa->asteroides[indice_nuevo_ast].largo = 1;
+
+      // B. Le damos minerales (puede ser chatarra valiosa por ser una nave)
+      mapa->asteroides[indice_nuevo_ast].Deuterio = rand() % 50 + 10;
+      mapa->asteroides[indice_nuevo_ast].Mutexio = rand() % 50 + 10;
+      mapa->asteroides[indice_nuevo_ast].semaforita = rand() % 50 + 10;
+      mapa->asteroides[indice_nuevo_ast].kernelio = rand() % 50 + 10;
+
+      // C. Inicializamos su semáforo para que otros puedan minarlo sin problemas
+      sem_init(&mapa->asteroides[indice_nuevo_ast].sem_mutex, 1, 1);
+
+      // D. ¡El toque mágico! Escribimos en la matriz compartida que ahora hay un asteroide
+      // El hilo_grafico del servidor y de los clientes verán esto y lo dibujarán automáticamente.
+      shm->MatrizMapa[y_muerte][x_muerte].estructuraMapa = ASTEROIDE;
+
+      // E. Actualizamos nuestro contador global
+      mapa->cant_asteroides++;
+  
+  // ---------------------------------------------------------
+  // FIN DE LA TRANSFORMACIÓN
+  // ---------------------------------------------------------
+  
+        // Al final de la inyección del asteroide en gameOver...
+    FILE *log = fopen("servidor_eventos.log", "a"); // "a" para añadir al final
+    if (log != NULL) {
+        fprintf(log, "[SISTEMA] Nave PID %d destruida sin recursos. Convertida en asteroide en pos (%d, %d).\n", 
+                nave->pid, x_muerte, y_muerte);
+        fclose(log);
+    }
+
+  // 4. ELIMINAMOS LA NAVE DEL ARRAY DE CONECTADAS (Tu código original)
   int desdeAcaAcomodar = -1;
   for (int i = 0; i < mapa->cant_naves; i++) {
     if (mapa->naves_conectadas[i].pid == nave->pid) {
@@ -248,16 +323,19 @@ void gameOver(struct ArgsMapa *args, struct NaveConectada *nave) {
       break;
     }
   }
+  
   if (desdeAcaAcomodar == -1)
     return;
 
   for (int i = desdeAcaAcomodar; i < mapa->cant_naves - 1; i++) {
     mapa->naves_conectadas[i] = mapa->naves_conectadas[i + 1];
   }
-  // decremento la cantidad de naves
+  
   mapa->cant_naves--;
-
 }
+
+
+
 
 void respawnNave(struct ArgsMapa *args, pid_t pid) {
   struct Mapa *mapa = args->mapa;
@@ -276,6 +354,8 @@ void respawnNave(struct ArgsMapa *args, pid_t pid) {
   mapa->cant_naves++;
 }
 
+//aca a medida que la nave se mueve, se actualiza su posicion en la matriz compartida, y se verifica que no choque con los bordes ni con otras naves, si choca con los bordes, aparece del otro lado, y si choca con otra nave, no deja avanzar
+//osea que el mapa
 // aca calculo la nueva pos para devolver el movimiento a la nave
 void moverNave(struct ArgsMapa *args, struct MensajeMovimiento msg) {
   struct Mapa *mapa = args->mapa;
@@ -354,3 +434,84 @@ void *hilo_cola_movimiento(void *arg) {
   }
   return NULL;
 }
+
+
+void colocarEstaciones(struct Mapa *mapa, struct MatrizCompartida *shm) {
+  // Definimos PI si no está disponible
+  #ifndef M_PI
+  #define M_PI 3.14159265358979323846
+  #endif
+
+  // Un radio de 10 da una separación masiva en el eje Y (ocupa casi toda la pantalla)
+  // En ncurses, los caracteres son más altos que anchos, así que escalamos el radio en X
+  double radioY = 9.0;
+  double radioX = 22.0; 
+
+  int coordenadasValidas = 0;
+  int x0, y0, x1, y1, x2, y2;
+
+  do {
+    // 1. Elegimos un centro ligeramente aleatorio para el triángulo, cerca del centro del mapa (40, 12)
+    int centroX = 35 + (rand() % 11); // Entre 35 y 45
+    int centroY = 11 + (rand() % 4);  // Entre 11 y 14
+
+    // 2. Elegimos un ángulo inicial completamente aleatorio (en radianes)
+    // Esto hará que el triángulo apunte hacia arriba, abajo, los lados, etc.
+    double anguloInicial = ((double)rand() / RAND_MAX) * 2 * M_PI;
+
+    // 3. Calculamos los tres ángulos separados por 120 grados (2*PI / 3)
+    double a0 = anguloInicial;
+    double a1 = anguloInicial + (2 * M_PI / 3);
+    double a2 = anguloInicial + (4 * M_PI / 3);
+
+    // 4. Convertimos coordenadas polares a cartesianas enteros
+    x0 = centroX + (int)(radioX * cos(a0));
+    y0 = centroY + (int)(radioY * sin(a0));
+
+    x1 = centroX + (int)(radioX * cos(a1));
+    y1 = centroY + (int)(radioY * sin(a1));
+
+    x2 = centroX + (int)(radioX * cos(a2));
+    y2 = centroY + (int)(radioY * sin(a2));
+
+    // 5. Control de límites estricto para evitar desbordes en la matriz (80x25)
+    if (x0 < 2 || x0 >= VENTANA_SIZE_X - 2 || y0 < 2 || y0 >= VENTANA_SIZE_Y - 2 ||
+        x1 < 2 || x1 >= VENTANA_SIZE_X - 2 || y1 < 2 || y1 >= VENTANA_SIZE_Y - 2 ||
+        x2 < 2 || x2 >= VENTANA_SIZE_X - 2 || y2 < 2 || y2 >= VENTANA_SIZE_Y - 2) {
+        continue; // Si se sale de la pantalla, re-calcula
+    }
+
+    // 6. Verificar en la SHM que ninguna posición pise un asteroide
+    if (shm->MatrizMapa[y0][x0].estructuraMapa == 0 &&
+        shm->MatrizMapa[y1][x1].estructuraMapa == 0 &&
+        shm->MatrizMapa[y2][x2].estructuraMapa == 0) {
+        
+        coordenadasValidas = 1;
+
+        // Asignar las posiciones finales rotadas
+        mapa->estaciones[0].posX = x0;
+        mapa->estaciones[0].posY = y0;
+        
+        mapa->estaciones[1].posX = x1;
+        mapa->estaciones[1].posY = y1;
+        
+        mapa->estaciones[2].posX = x2;
+        mapa->estaciones[2].posY = y2;
+    }
+  } while (!coordenadasValidas);
+
+  // Inicializar atributos comunes y registrar en memoria compartida
+  for (int i = 0; i < ESTACION_MAX_SV; i++) {
+    mapa->estaciones[i].ancho = 1;
+    mapa->estaciones[i].largo = 1;
+    mapa->estaciones[i].minerales = 0;      
+    mapa->estaciones[i].combustible = 1000; 
+    mapa->estaciones[i].sem_mutex = NULL; 
+    
+    int x = mapa->estaciones[i].posX;
+    int y = mapa->estaciones[i].posY;
+    
+    shm->MatrizMapa[y][x].estructuraMapa = ESTACION;
+  }
+}
+

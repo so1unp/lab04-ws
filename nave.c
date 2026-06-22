@@ -18,6 +18,7 @@ void *hilo_soporte_vital(void *arg);
 void *hilo_propulsion(void *arg);
 void *hilo_extraccion(void *arg);
 void *hilo_grafico_nave(void *arg);
+void *hilo_comercio(void *arg);
 /*funciones*/
 int trueque_estacion(struct Nave *nave);
 int minerales_totales(struct Nave *nave);
@@ -34,7 +35,7 @@ int calcular_total_minerales(struct Nave *nave) {
   }
   return total;
 }
-int minerales_totales(struct Nave *nave) {
+int minerales_totales(struct Nave *nave) { //no esta
   int total = 0;
   for (int i = 0; i < 4; i++) {
     total += nave->bodegaMinerales[i];
@@ -42,6 +43,105 @@ int minerales_totales(struct Nave *nave) {
   return total;
 }
 
+//snprintf(buffer, TAMANIO_MAX_MSG, "PID:%d;MINERALES:%d", getpid(), totalMinerales);
+//esa linea esta en la linea 
+
+static int abrir_cola_escritura(mqd_t *cola, const char *nombre) {
+  //aca 
+    struct mq_attr attr = {0, 3, TAMANIO_MAX_MSG, 0};
+    *cola = mq_open(nombre, O_WRONLY | O_CREAT, 0666, &attr);
+    if (*cola == (mqd_t)-1) {
+        perror("Error al abrir la cola de escritura");
+        return -1;
+    }
+    return 0;
+}
+// no uso la funcion
+// static int abrir_cola_lectura(mqd_t *cola, const char *nombre) {
+//     *cola = mq_open(nombre, O_RDONLY);
+//     if (*cola == (mqd_t)-1) {
+//         perror("Error al abrir la cola de lectura");
+//         return -1;
+//     }
+//     return 0;
+// }
+
+static int enviar_minerales_a_estacion(int totalMinerales) {
+    mqd_t cola_estacion;
+    char buffer[TAMANIO_MAX_MSG];
+
+    if (abrir_cola_escritura(&cola_estacion, NOMBRE_COLA_ESTACION) == -1) {
+        return -1;
+    }
+
+    // Empaquetamos el PID junto con los minerales usando getpid()
+    //el pid es necesario para que la estacion sepa a quien responder, y los minerales para el trueque
+    //cada interaccion con la estacion es independiente, no hay un "contrato" previo, entonces el pid es la forma de identificarnos
+    //cada pid es una nave diferente, y la estacion puede recibir mensajes de varias naves, por eso el pid es crucial para que la estacion sepa a quien responder
+    snprintf(buffer, TAMANIO_MAX_MSG, "PID:%d;MINERALES:%d", getpid(), totalMinerales);
+
+    if (mq_send(cola_estacion, buffer, strlen(buffer), 0) == -1) {
+        perror("Error al enviar mensaje a la estación");
+        mq_close(cola_estacion);
+        return -1;
+    }
+
+    mq_close(cola_estacion);
+    return 0;
+}
+
+static int recibir_respuesta_estacion(char *respuesta_buffer, size_t tam_buffer) {
+    mqd_t cola_respuesta;
+    ssize_t bytes_leidos;
+    char nombre_cola[64];
+    struct mq_attr attr = {0, 3, TAMANIO_MAX_MSG, 0};
+
+    // Calculamos el nombre de nuestra cola privada
+    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_COLA_NAVE_SERVIDOR, getpid());
+
+    // Abrimos la cola en modo lectura
+    cola_respuesta = mq_open(nombre_cola, O_CREAT | O_RDONLY, PERMISOS_COLA, &attr);
+    if (cola_respuesta == (mqd_t)-1) {
+        perror("Error al abrir cola privada de respuesta");
+        return -1;
+    }
+
+    bytes_leidos = mq_receive(cola_respuesta, respuesta_buffer, tam_buffer, NULL);
+    if (bytes_leidos == -1) {
+        perror("Error al recibir mensaje de la estación");
+        mq_close(cola_respuesta);
+        return -1;
+    }
+
+    respuesta_buffer[bytes_leidos] = '\0';
+    
+    // Limpieza total: Cerramos y DESTRUIMOS la cola (unlink) para no dejar rastros
+    mq_close(cola_respuesta);
+    mq_unlink(nombre_cola);
+    
+    return 0;
+}
+
+static int parsear_respuesta_estacion(const char *respuesta, int *combustible, int *oxigeno) {
+    if (sscanf(respuesta, "FUEL:%d;OXY:%d", combustible, oxigeno) != 2) {
+        fprintf(stderr, "Respuesta inválida de la estación: %s\n", respuesta);
+        return -1;
+    }
+    return 0;
+}
+
+static void aplicar_trueque(struct Nave *nave, int combustible_recibido, int oxigeno_recibido) {
+    sem_wait(nave->sem_mutex);
+
+    nave->combustible += combustible_recibido;
+    nave->oxigeno += oxigeno_recibido;
+
+    for (int i = 0; i < 4; i++) {
+        nave->bodegaMinerales[i] = 0;
+    }
+
+    sem_post(nave->sem_mutex);
+}
 int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
@@ -63,9 +163,11 @@ int main(int argc, char *argv[]) {
   }
 
   // Inicializar nave
-
+//cola = mq_open(NOMBRE_COLA_ESTACION, O_WRONLY, ...);
+//esa linea de arriba esta 
   nave.oxigeno = 100;
   nave.combustible = 100;
+  nave.en_trueque = 0; // Nuevo campo para indicar si la nave está en medio de un trueque
   nave.velocidadMovimiento = 1;
   nave.combustibleGastadoMovimiento = 1;
   nave.ancho = 1;
@@ -112,7 +214,7 @@ int main(int argc, char *argv[]) {
     usleep(100000);
   }
   // HILOS
-  pthread_t hiloSoporteVital, hiloPropulsion, hiloExtraccion, hiloGrafico;
+  pthread_t hiloSoporteVital, hiloPropulsion, hiloExtraccion, hiloGrafico, hiloComercio;
 
   if (pthread_create(&hiloSoporteVital, NULL, hilo_soporte_vital, &nave) != 0) {
     perror("pthread_create hilo_soporte_vital");
@@ -122,7 +224,7 @@ int main(int argc, char *argv[]) {
     perror("pthread_create hilo_propulsion");
     exit(EXIT_FAILURE);
   }
-  if (pthread_create(&hiloExtraccion, NULL, hilo_extraccion, &nave) != 0) {
+  if (pthread_create(&hiloExtraccion, NULL, hilo_extraccion, &args) != 0) {
     perror("pthread_create hilo_extraccion");
     exit(EXIT_FAILURE);
   }
@@ -130,6 +232,10 @@ int main(int argc, char *argv[]) {
     perror("pthread_create hilo_grafico");
     exit(EXIT_FAILURE);
   }
+  if (pthread_create(&hiloComercio, NULL, hilo_comercio, &args) != 0) {
+  perror("pthread_create hilo_comercio");
+  exit(EXIT_FAILURE);
+}
 
   // Loop principal — termina cuando muere la nave
   // en main, proteger la actualización de posición
@@ -150,24 +256,36 @@ int main(int argc, char *argv[]) {
   }
 
   // Game over
+  // 1. Avisamos al servidor
   gameOver_nave(&nave);
-  sem_wait(nave.mutex_pantalla);
-  mvprintw(0, 0, "GAME OVER - oxigeno:%d combustible:%d", nave.oxigeno,
-           nave.combustible);
-  refresh();
-  sem_post(nave.mutex_pantalla);
-  napms(20000);
 
-  // Cleanup
+  // 2. Cleanup PRIMERO (Matamos los hilos para que dejen de dibujar)
   pthread_cancel(hiloSoporteVital);
   pthread_cancel(hiloPropulsion);
   pthread_cancel(hiloExtraccion);
   pthread_cancel(hiloGrafico);
+  pthread_cancel(hiloComercio);
 
   pthread_join(hiloSoporteVital, NULL);
   pthread_join(hiloPropulsion, NULL);
   pthread_join(hiloExtraccion, NULL);
   pthread_join(hiloGrafico, NULL);
+  pthread_join(hiloComercio, NULL);
+
+  // 3. Game Over visual (Ahora que nadie molesta, dibujamos en nuestra ventana)
+  sem_wait(nave.mutex_pantalla);
+  werase(nave.grafico.ventana); // Borramos el mapa
+  box(nave.grafico.ventana, 0, 0); // Repintamos los bordes
+  
+  // Usamos mvwprintw para escribir ADENTRO de la ventana correcta
+  mvwprintw(nave.grafico.ventana, 2, 2, "GAME OVER - oxigeno:%d combustible:%d", 
+            nave.oxigeno, nave.combustible);
+            
+  wrefresh(nave.grafico.ventana);
+  sem_post(nave.mutex_pantalla);
+  
+  napms(5000); // 5 segundos para leer el cartel antes de cerrar
+  
 
   sem_close(nave.sem_mutex);
   sem_close(nave.mutex_pantalla);
@@ -179,13 +297,7 @@ int main(int argc, char *argv[]) {
   exit(EXIT_SUCCESS);
 }
 
-// /**
-//  * Función para realizar el trueque en la estación espacial.
-//  * Esta función se encarga de enviar los recursos de la nave a la estación
-//  espacial a través de una cola de mensajes y recibir los recursos necesarios
-//  a cambio.
-//  *
-//  */
+
 
 /**
  * Función para el hilo de extracción de minerales.
@@ -193,44 +305,188 @@ int main(int argc, char *argv[]) {
  * consumo de combustible y la actualización de la bodega de minerales de la
  * nave.
  */
+/**
+ * Función para el hilo de extracción de minerales.
+ * [ORIGINAL - nave.c] Firma y estructura general del hilo
+ * [ALEX] Lógica de detección de asteroide adyacente, límite de bodega
+ *        y extracción aleatoria
+ */
 void *hilo_extraccion(void *arg) {
-  struct Nave *nave = (struct Nave *)arg;
-  // Simula la extracción de minerales y el consumo de combustible
+  // [ALEX] Antes recibía solo "struct Nave *nave", ahora necesita
+  // también el shm para revisar la matriz compartida -> usamos ArgsNave
+  struct ArgsNave *args = (struct ArgsNave *)arg;
+  struct Nave *nave = args->nave;          // [ALEX]
+  struct MatrizCompartida *shm = args->shm; // [ALEX]
 
-  srand((unsigned int)time(
-      NULL)); // Inicializa la semilla para la generación de números aleatorios
-  int asteroideAdyacente = 1;
+  srand((unsigned int)time(NULL)); // [ORIGINAL] ya estaba en nave.c
+
+  int limite_bodega = 50; // [ALEX] Capacidad máxima de la bodega de minerales
 
   while (1) {
-    sleep(2); // Simula el tiempo de extracción
+    sleep(2); // [ORIGINAL] Simula el tiempo de extracción
 
-    /* verifica si hay un asteroide adyacente */
-    if (!asteroideAdyacente) {
-      continue; // Intenta de nuevo en la siguiente iteración
+    // [ALEX] Obtenemos posición actual y combustible de forma segura
+    sem_wait(nave->sem_mutex);
+    int x = nave->posX;
+    int y = nave->posY;
+    int combustible_actual = nave->combustible;
+
+    // [ALEX] Calculamos cuántos minerales tenemos en total
+    int minerales_actuales = 0;
+    for (int i = 0; i < 4; i++) { // 4 = BODEGA_MINERALES_MAX
+      minerales_actuales += nave->bodegaMinerales[i];
+    }
+    sem_post(nave->sem_mutex);
+
+    // [ORIGINAL] Chequeo de combustible, antes estaba dentro del lock
+    if (combustible_actual <= 0) {
+      break; // No hay combustible para extraer
     }
 
-    sem_wait(nave->sem_mutex); // --- BLOQUEO ---
-
-    if (nave->combustible <= 0) {
-      sem_post(nave->sem_mutex);
-      break; // Sale del bucle si no hay combustible
+    // [ALEX] Si la bodega está llena, no hace nada (no gasta combustible)
+    if (minerales_actuales >= limite_bodega) {
+      continue;
     }
 
-    /*gasta combustible*/
-    nave->combustible -= 1;
+    // [ALEX] Antes esto era "int asteroideAdyacente = 1;" fijo (siempre true) en nave.c.
+    // Ahora se revisa de verdad contra la matriz compartida.
+    int asteroideAdyacente = 0;
 
-    /*extrae minerales */
-    int indiceMIneral;
-    for (int i = 0; i < 4; i++) {
-      indiceMIneral = i;
-      nave->bodegaMinerales[indiceMIneral] += 1;
+    sem_wait(&shm->mutex); // [ALEX] Bloqueo del mapa compartido
+    if (y > 0 && shm->MatrizMapa[y - 1][x].estructuraMapa == ASTEROIDE) {
+      asteroideAdyacente = 1; // Arriba
+    } else if (y < VENTANA_SIZE_Y - 1 &&
+               shm->MatrizMapa[y + 1][x].estructuraMapa == ASTEROIDE) {
+      asteroideAdyacente = 1; // Abajo
+    } else if (x > 0 && shm->MatrizMapa[y][x - 1].estructuraMapa == ASTEROIDE) {
+      asteroideAdyacente = 1; // Izquierda
+    } else if (x < VENTANA_SIZE_X - 1 &&
+               shm->MatrizMapa[y][x + 1].estructuraMapa == ASTEROIDE) {
+      asteroideAdyacente = 1; // Derecha
     }
+    sem_post(&shm->mutex); // [ALEX]
 
-    sem_post(nave->sem_mutex); // --- DESBLOQUEO ---
+    // [ORIGINAL] Estructura del bloque de extracción (sem_wait/sem_post sobre nave)
+    // [ALEX] Pero ahora solo extrae SI hay asteroide adyacente, y en un slot aleatorio
+    if (asteroideAdyacente) {
+      sem_wait(nave->sem_mutex); // --- BLOQUEO --- [ORIGINAL]
+
+      if (nave->combustible > 0) {
+        nave->combustible -= 1; // [ORIGINAL] gasta combustible
+
+        // [ALEX] Antes (nave.c) llenaba los 4 minerales con un for.
+        // Ahora extrae solo 1 tipo de mineral, elegido al azar
+        int tipoMineral = rand() % 4; // 4 = BODEGA_MINERALES_MAX
+        nave->bodegaMinerales[tipoMineral] += 5; // [ALEX] +5 en vez de +1
+      }
+
+      sem_post(nave->sem_mutex); // --- DESBLOQUEO --- [ORIGINAL]
+    }
   }
+
   return NULL;
 }
 
+
+
+
+void* hilo_comercio(void* arg){ //nuevo
+    struct ArgsNave *args = (struct ArgsNave *)arg;
+    struct Nave *nave = args->nave;
+    struct MatrizCompartida *shm = args->shm;
+
+    // Inicializamos el semáforo contador en 3 (Máximo 3 naves por estación)
+    sem_t *sem_estacion_contador = sem_open(SEM_ESTACION_CONTADOR, O_CREAT, 0666, 3);
+
+    while (1) {
+        sleep(1);
+
+        // Revisamos cuántos minerales tenemos
+        sem_wait(nave->sem_mutex);
+        int x = nave->posX;
+        int y = nave->posY;
+        int minerales = calcular_total_minerales(nave);
+        sem_post(nave->sem_mutex);
+
+        // Si la bodega está vacía, no hacemos nada
+        if (minerales <= 0) {
+            continue; 
+        }
+
+        // Revisamos si hay una estación adyacente
+        int estacionAdyacente = 0;
+        sem_wait(&shm->mutex); 
+        if (y > 0 && shm->MatrizMapa[y-1][x].estructuraMapa == ESTACION) estacionAdyacente = 1;
+        else if (y < VENTANA_SIZE_Y - 1 && shm->MatrizMapa[y+1][x].estructuraMapa == ESTACION) estacionAdyacente = 1;
+        else if (x > 0 && shm->MatrizMapa[y][x-1].estructuraMapa == ESTACION) estacionAdyacente = 1;
+        else if (x < VENTANA_SIZE_X - 1 && shm->MatrizMapa[y][x+1].estructuraMapa == ESTACION) estacionAdyacente = 1;
+        sem_post(&shm->mutex);
+
+        // Si hay una estación y tenemos minerales, arrancamos el proceso
+        if (estacionAdyacente) {
+            
+            nave->en_trueque = 1; // Congelamos la nave (bloquea teclado)
+
+            sem_wait(sem_estacion_contador); // Hacemos fila. Si ya hay 3 naves adentro, el hilo se duerme acá.
+            
+            trueque_estacion(nave); // funciones de intercambio
+
+            //agrego delay para simular que el trueque sea lento y no tan rapido que flash :V
+            sleep(3);
+
+            sem_post(sem_estacion_contador); // Salimos de la estación y liberamos el cupo para otra nave
+            
+            nave->en_trueque = 0; // Descongelamos la nave
+
+            sleep(2); // Delay para darte tiempo a moverte antes de que vuelva a intentar entrar
+        }
+    }
+    
+    return NULL;
+}
+
+/** 
+ * Función para realizar el trueque en la estación espacial.
+ * Esta función se encarga de enviar los recursos de la nave a la estación espacial a través de una cola de mensajes y recibir los recursos necesarios a cambio.
+ *
+ */
+int trueque_estacion(struct Nave* nave){ //nuevo
+    int totalMinerales;
+    int combustible_recibido = 0;
+    int oxigeno_recibido = 0;
+    char respuesta_buffer[TAMANIO_MAX_MSG + 1];
+
+    sem_wait(nave->sem_mutex);
+    totalMinerales = calcular_total_minerales(nave);
+    sem_post(nave->sem_mutex);
+
+    if (totalMinerales <= 0) {
+        //printf("No hay minerales para intercambiar\n");
+        return 0;
+    }
+      //esta funcion esta 
+    if (enviar_minerales_a_estacion(totalMinerales) == -1) {
+        return -1;
+    }
+
+    if (recibir_respuesta_estacion(respuesta_buffer, TAMANIO_MAX_MSG) == -1) {
+        return -1;
+    }
+
+    //printf("Respuesta de la estación: %s\n", respuesta_buffer);
+
+    if (parsear_respuesta_estacion(respuesta_buffer, &combustible_recibido, &oxigeno_recibido) == -1) {
+        return -1;
+    }
+
+    aplicar_trueque(nave, combustible_recibido, oxigeno_recibido);
+
+    //printf("Trueque realizado: +%d combustible, +%d oxígeno\n",combustible_recibido, oxigeno_recibido);
+
+    return 0;
+}
+
+//2 
 void *hilo_soporte_vital(void *arg) {
   struct Nave *nave = (struct Nave *)arg;
 
@@ -279,17 +535,33 @@ void movimientoPorTecla(void *arg, int xPos, int yPos) {
 /*Aca solo se ve que tecla para mandar las nuevas coordenadas actualizadas, se
  * le suma/resta la velocidad de movimiento*/
 void *hilo_propulsion(void *arg) {
-  struct ArgsNave *args = (struct ArgsNave *)arg;
-  struct MatrizCompartida *shm = args->shm;
-  struct Nave *nave = args->nave;
+  struct ArgsNave *args = (struct ArgsNave *)arg; // [ORIGINAL]
+  // struct MatrizCompartida *shm = args->shm; // [ALEX] la comenta porque no se usa (evita warning)
+  struct Nave *nave = args->nave; // [ORIGINAL]
   // w a s d
   int tecla;
 
+  // [ALEX] Nuevo: hace que getch() no se quede esperando bloqueado.
+  // Si no se toca nada en 50ms, getch() devuelve ERR y el loop puede seguir.
+  timeout(50);
+
   while (1) {
-    tecla = getch();
-    mvprintw(0, 0, "tecla=%d   ", tecla);
-    refresh();
-    switch (tecla) {
+    tecla = getch(); // [ORIGINAL]
+
+    // [ALEX] Si no tocaste ninguna tecla, tecla vale ERR. Seguimos el loop sin hacer nada.
+    if (tecla == ERR) {
+      continue;
+    }
+
+    // [ALEX] Si la nave está en medio de un trueque con la estación,
+    // ignoramos la tecla (la nave queda "congelada")
+    if (nave->en_trueque == 1) {
+      continue;
+    }
+
+    mvprintw(0, 0, "tecla=%d   ", tecla); // [ORIGINAL]
+    refresh(); // [ORIGINAL]
+    switch (tecla) { // [ORIGINAL] - el switch completo no cambia
     case 'w':
       movimientoPorTecla(nave, nave->posX,
                          nave->posY - nave->velocidadMovimiento);
@@ -310,7 +582,10 @@ void *hilo_propulsion(void *arg) {
   }
   return NULL;
 }
-void *hilo_grafico_nave(void *arg) {
+
+
+
+void *hilo_grafico_nave(void *arg) {  //ojo
   struct ArgsNave *args = (struct ArgsNave *)arg;
   struct MatrizCompartida *shm = args->shm;
   struct Nave *nave = args->nave;
@@ -502,3 +777,5 @@ void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
   mq_send(mq_servidor, (char *)&mensaje, sizeof(mensaje), 0);
   mq_close(mq_servidor);
 }
+
+

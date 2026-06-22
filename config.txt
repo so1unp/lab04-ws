@@ -2,7 +2,7 @@
 
 # Cantidades de Entidades
 CANT_ESTACIONES=1
-CANT_ASTEROIDES=1
+CANT_ASTEROIDES=3
 
 # Capacidad Inicial de Recursos en Asteroides (Min/Max)
 GEO_MIN=100

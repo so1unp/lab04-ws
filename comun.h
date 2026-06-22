@@ -9,6 +9,10 @@
 #define NOMBRE_COLA_ESTACION "/cola_estacion"
 #define PERMISOS_COLA 0666
 #define TAMANIO_MAX_MSG 256
+#define NOMBRE_COLA_NAVE "/cola_nave" // nombre de la cola de la nave para recibir msj de la estacion
+//#define ESTACION_MAX_SV 3
+#define SEM_ESTACION_CONTADOR "/sem_estacion_contador" // semáforo para controlar el contador de naves en la estación
+
 
 #define NOMBRE_COLA_ESTACION "/cola_estacion"
 #define NOMBRE_COLA_NAVE_SERVIDOR "/cola_nave_%d"
@@ -34,14 +38,19 @@
 #define NAVE_MAX_SV 3
 
 struct Asteroides {
-  int minerales;
-  int posX, posY;
-  int ancho, largo;
-  sem_t *sem_mutex;
+    int posX;
+    int posY;
+    sem_t sem_mutex;
+    int Mutexio;
+    int semaforita;
+    int kernelio;
+    int Deuterio;
+    int ancho, largo;
 };
 
 struct Estacion {
   int minerales;
+  int combustible;
   int posX, posY;
   int ancho, largo;
   sem_t *sem_mutex;
@@ -66,6 +75,8 @@ struct Nave {
   int velocidadMovimiento;
   int combustibleGastadoMovimiento;
   int bodegaMinerales[BODEGA_MINERALES_MAX];
+  int en_trueque; // Nuevo campo para indicar si la nave está en medio de un trueque
+  
   sem_t *sem_mutex;
   int ancho, largo;
   sem_t *mutex_pantalla;
@@ -85,12 +96,14 @@ struct ArgsNave {
 };
 
 struct Mapa {
-  struct Asteroides asteroides[ASTEROIDE_MAX_SV];
+  struct Asteroides asteroides[ASTEROIDE_MAX_SV + NAVE_MAX_SV]; // Ajuste: Aumentamos el tamaño del array para incluir naves
   struct Estacion estaciones[ESTACION_MAX_SV];
   struct Grafico grafico;
   pthread_mutex_t mutex_grafico;
   struct NaveConectada naves_conectadas[NAVE_MAX_SV];
   int cant_naves;
+  int cant_asteroides;
+
 };
 
 
