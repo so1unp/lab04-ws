@@ -21,6 +21,7 @@
 void *hilo_grafico(void *arg);
 void *hilo_cola_respawn(void *arg);
 void *hilo_cola_movimiento(void *arg);
+void *hilo_combustible_estacion(void *arg);
 
 // funciones
 struct NaveConectada *
@@ -37,11 +38,15 @@ static struct Mapa *s_mapa = NULL;
 static struct MatrizCompartida *s_shm = NULL;
 // handler para cierre abrupto, control
 void manejador_sigint(int sig) {
+  (void)sig; // Evita advertencia de variable no usada
   if (s_mapa && s_shm)
     matarServidorYprocesos(s_mapa, s_shm);
   exit(EXIT_SUCCESS);
 }
 int main(int argc, char *argv[]) {
+  (void)argc;
+  (void)argv;
+  sem_unlink(SEM_ESTACION_CONTADOR);
 
   // --- AGREGAR ESTO AL PRINCIPIO ---
   // Limpieza preventiva de la caché/restos de ejecuciones anteriores
@@ -53,7 +58,7 @@ int main(int argc, char *argv[]) {
   // comun, ya no se usa
 
   // Inicializa la semilla aleatoria usando la hora actual del sistema
-  srand(time(NULL));
+  srand((unsigned int)time(NULL));
   struct Mapa mapa;
 
   // ACA SE INICIALIZA LA MATRIZ COMPARTIDA
@@ -74,9 +79,19 @@ int main(int argc, char *argv[]) {
   rellenarMapa(&mapa, shm);
   inicializarVentanas(&mapa);
 
-  pthread_t hiloGrafico, hiloRespawn, hiloMovimiento;
+  pthread_t hiloGrafico, hiloRespawn, hiloMovimiento, hilosEstaciones[ESTACION_MAX_SV];
 
-  struct ArgsMapa args = {&mapa, shm};
+  struct ArgsMapa args = {&mapa, shm}; 
+  /*  servidor.c:89:19: error: redefinition of ‘args’
+   89 |   struct ArgsMapa args = {&mapa, shm};*/
+
+   //lo que podemos hacer
+  for (int i = 0; i < ESTACION_MAX_SV; i++) {
+  if (pthread_create(&hilosEstaciones[i], NULL, hilo_combustible_estacion, &args) != 0) {
+  perror("pthread_create hilosEstaciones");
+  exit(EXIT_FAILURE);
+  }
+  }
 
   if (pthread_create(&hiloGrafico, NULL, hilo_grafico, &args) != 0) {
     perror("pthread_create hilo_grafico");
@@ -109,6 +124,10 @@ int main(int argc, char *argv[]) {
   pthread_join(hiloRespawn, NULL);
   pthread_join(hiloMovimiento, NULL);
 
+  for (int i = 0; i < ESTACION_MAX_SV; i++) {
+  pthread_join(hilosEstaciones[i], NULL);
+  }
+
   // DE ACA EN ADELANTE LIMPIEZA
   matarServidorYprocesos(&mapa, shm);
   exit(EXIT_SUCCESS);
@@ -129,8 +148,9 @@ void rellenarMapa(struct Mapa *mapa, struct MatrizCompartida *shm) {
 
     // Esta es la parte vital del servidor: busca un lugar vacío
     do {
-      x = rand() % VENTANA_SIZE_X;
-      y = rand() % VENTANA_SIZE_Y;
+      //queremos que la posicion, no sea ni el 0, ni el 79, ni el 24, para evitar los bordes**
+      x = rand() % (VENTANA_SIZE_X - 2) + 1;
+      y = rand() % (VENTANA_SIZE_Y - 2) + 1;
     } while (shm->MatrizMapa[y][x].estructuraMapa != 0);
 
     // Guardamos la posición
@@ -242,7 +262,9 @@ void *hilo_cola_respawn(void *arg) {
   struct MensajeConexion msg;
 
   // formato de la cola de respawn servidor y abirla
-  struct mq_attr attr = {0, 10, sizeof(struct MensajeConexion), 0};
+ struct mq_attr attr = {0};
+  attr.mq_maxmsg = 3;
+  attr.mq_msgsize = sizeof(struct MensajeConexion);
   mqd_t mq_conexiones =
       mq_open(NOMBRE_COLA_SERVIDOR_RESPAWN, O_CREAT | O_RDONLY, 0644, &attr);
   if (mq_conexiones == (mqd_t)-1) {
@@ -458,12 +480,14 @@ void moverNave(struct ArgsMapa *args, struct MensajeMovimiento msg) {
 }
 
 void *hilo_cola_movimiento(void *arg) {
-  struct ArgsMapa *args = (struct ArgsMapa *)arg;
-  struct Mapa *mapa = args->mapa;
+  struct ArgsMapa *args = (struct ArgsMapa *)arg;//esta variable puede no ser usada, por
+  //struct Mapa *mapa = args->mapa; //esta variable 
   struct MatrizCompartida *shm = args->shm;
   struct MensajeMovimiento msg;
 
-  struct mq_attr attr = {0, 10, sizeof(struct MensajeMovimiento), 0};
+  struct mq_attr attr = {0};
+  attr.mq_maxmsg = 3;
+  attr.mq_msgsize = sizeof(struct MensajeMovimiento);
   mqd_t mq_conexiones =
       mq_open(NOMBRE_COLA_SERVIDOR_MOVIMIENTO, O_CREAT | O_RDONLY, 0644, &attr);
   if (mq_conexiones == (mqd_t)-1) {
@@ -596,3 +620,98 @@ void matarServidorYprocesos(struct Mapa *mapa, struct MatrizCompartida *shm) {
 
   endwin();
 }
+
+
+void *hilo_combustible_estacion(void *arg) {
+    struct ArgsMapa *args = (struct ArgsMapa *)arg;
+    struct Mapa *mapa = args->mapa;
+    
+    // Usamos un truco seguro para asignar un ID único (0, 1, 2) a cada hilo
+    static int generador_id = 0;
+    static pthread_mutex_t mutex_id = PTHREAD_MUTEX_INITIALIZER;
+    
+    pthread_mutex_lock(&mutex_id);
+    int mi_estacion_id = generador_id++;
+    pthread_mutex_unlock(&mutex_id);
+    
+    int alerta_enviada = 0;
+    int estacion_muerta_enviada = 0;
+
+    while (1) {
+        sleep(2); // Frecuencia de consumo de la estación (ajustable)
+
+        // Bloqueamos la SHM antes de leer/modificar el combustible
+        sem_wait(&args->shm->mutex);
+        
+        if (mapa->estaciones[mi_estacion_id].combustible > 0) {
+            // El combustible decrece con el tiempo
+            mapa->estaciones[mi_estacion_id].combustible -= 10;
+
+            if (mapa->estaciones[mi_estacion_id].combustible < 0) {
+                mapa->estaciones[mi_estacion_id].combustible = 0;
+            }
+
+            // Si una nave llena la estación, reseteamos el flag de alerta
+            if (mapa->estaciones[mi_estacion_id].combustible > 200) {
+                alerta_enviada = 0;
+                estacion_muerta_enviada = 0;
+            }
+
+            // Umbral crítico: 20% (200 unidades de un máximo de 1000)
+            if (mapa->estaciones[mi_estacion_id].combustible <= 200 && 
+                mapa->estaciones[mi_estacion_id].combustible > 0 && 
+                alerta_enviada == 0) {
+
+                alerta_enviada = 1; // Se envía una sola vez por evento crítico
+
+                // Preparamos el mensaje directo (MD)
+                struct MensajeAlerta msg_alerta;
+                snprintf(msg_alerta.texto, sizeof(msg_alerta.texto), 
+                         "[ALERTA HUD] Estacion %d en pos (%d,%d) con combustible critico (20%% o menos)!", 
+                         mi_estacion_id, 
+                         mapa->estaciones[mi_estacion_id].posX, 
+                         mapa->estaciones[mi_estacion_id].posY);
+
+                // Notificar a todas las naves que figuran en el array de conectados del servidor
+                for (int j = 0; j < mapa->cant_naves; j++) {
+                    char nombre_cola_alerta[64];
+                    snprintf(nombre_cola_alerta, sizeof(nombre_cola_alerta), NOMBRE_COLA_ALERTAS_NAVE, mapa->naves_conectadas[j].pid);
+
+                    // O_NONBLOCK evita retrasar el servidor si una nave no procesa rápido sus mensajes
+                    mqd_t mq_dest = mq_open(nombre_cola_alerta, O_WRONLY | O_NONBLOCK);
+                    if (mq_dest != (mqd_t)-1) {
+                        mq_send(mq_dest, (const char *)&msg_alerta, sizeof(msg_alerta), 0);
+                        mq_close(mq_dest);
+                    }
+                }
+            }
+        }// --- NUEVO BLOQUE: La estación llegó exactamente a 0 (Estación Muerta) ---
+        else if (mapa->estaciones[mi_estacion_id].combustible == 0 && estacion_muerta_enviada == 0) {
+            estacion_muerta_enviada = 1; // Se envía una sola vez para no spamear
+
+            struct MensajeAlerta msg_muerte;
+            snprintf(msg_muerte.texto, sizeof(msg_muerte.texto), 
+                     "[HUD] Estacion %d en (%d,%d) ha MUERTO (Sin combustible).", 
+                     mi_estacion_id, 
+                     mapa->estaciones[mi_estacion_id].posX, 
+                     mapa->estaciones[mi_estacion_id].posY);
+
+            // Avisar a las naves que la estación ya no da para más
+            for (int j = 0; j < mapa->cant_naves; j++) {
+                char nombre_cola_alerta[64];
+                snprintf(nombre_cola_alerta, sizeof(nombre_cola_alerta), NOMBRE_COLA_ALERTAS_NAVE, mapa->naves_conectadas[j].pid);
+
+                mqd_t mq_dest = mq_open(nombre_cola_alerta, O_WRONLY | O_NONBLOCK);
+                if (mq_dest != (mqd_t)-1) {
+                    mq_send(mq_dest, (const char *)&msg_muerte, sizeof(msg_muerte), 0);
+                    mq_close(mq_dest);
+                }
+            }
+        }
+
+        sem_post(&args->shm->mutex);
+    }
+    return NULL;
+}
+
+

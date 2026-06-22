@@ -13,13 +13,15 @@
 //#define ESTACION_MAX_SV 3
 #define SEM_ESTACION_CONTADOR "/sem_estacion_contador" // semáforo para controlar el contador de naves en la estación
 
+/*config recursos de la nave*/
+#define OXIGENO_MAXIMO 250
+#define COMBUSTIBLE_MAXIMO 100
 
 #define NOMBRE_COLA_ESTACION "/cola_estacion"
 #define NOMBRE_COLA_NAVE_SERVIDOR "/cola_nave_%d"
 #define NOMBRE_COLA_SERVIDOR_RESPAWN "/cola_servidor_respawn"
 #define NOMBRE_COLA_SERVIDOR_MOVIMIENTO "/cola_servidor_movimiento"
-
-
+#define NOMBRE_COLA_ALERTAS_NAVE "/cola_alerta%d"
 
 #define BODEGA_MINERALES_MAX 4
 //VARIABLE MEMORIA COMPARTIDA MAPA
@@ -117,5 +119,7 @@ struct MensajeMovimiento {
   pid_t pid;
   int posX, posY;
 };
-
+struct MensajeAlerta {
+    char texto[TAMANIO_MAX_MSG];
+};
 #endif /* COMUN_H */

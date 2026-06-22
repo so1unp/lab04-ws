@@ -61,12 +61,15 @@ void* hilo_grafico_estacion(void* arg); // Equivalente al radar (dibuja la estac
 
 int main(int argc, char *argv[])
 {
+    (void)argc;
+    (void)argv;
     struct EstacionProceso estacion;
     pthread_t hiloConsumo, hiloTrueques, hiloGrafico;
 
     /* Inicializa los recursos de la estación al máximo */
-    estacion.oxigeno = 100;
-    estacion.combustible = 100;
+    estacion.oxigeno = OXIGENO_MAXIMO;
+    estacion.combustible = COMBUSTIBLE_MAXIMO;
+    estacion.activa = 1; // La estación empieza operativa
     
     // --- OBTENCIÓN DE COORDENADAS DESDE EL SERVIDOR ---
     // Aquí puedes poner una lógica para leer de una cola del servidor.
@@ -209,6 +212,7 @@ void* hilo_consumo_interno(void* arg) {
     return NULL;
 }
 
+
 /**
  * Hilo que atiende los trueques. Abre la cola POSIX en modo LECTURA/ESCRITURA
  * y procesa lo que pide nave.c enviando la respuesta correspondiente.
@@ -266,7 +270,9 @@ void* hilo_atender_trueques(void* arg) {
             snprintf(respuesta, TAMANIO_MAX_MSG, "FUEL:0;OXY:0;STATUS:INACTIVE");
 
             // NUEVO: abrir cola privada de la nave para responder
-            struct mq_attr attr_resp = {0, 3, TAMANIO_MAX_MSG, 0};
+            struct mq_attr attr_resp = {0};
+attr.mq_maxmsg = 3;
+attr.mq_msgsize = TAMANIO_MAX_MSG;
             mqd_t cola_nave = mq_open(nombre_cola_nave, O_CREAT | O_WRONLY, PERMISOS_COLA, &attr_resp);
             if (cola_nave != (mqd_t)-1) {
                 mq_send(cola_nave, respuesta, strlen(respuesta), 0);
@@ -280,18 +286,23 @@ void* hilo_atender_trueques(void* arg) {
             // --- AJUSTE: El mineral recibido actúa como combustible (Deuterio) ---
             // Cada unidad de mineral nos devuelve un % de combustible, por ejemplo, 15% por viaje
             est->bodegaMinerales[0] += minerales_recibidos; 
-            est->combustible += (minerales_recibidos * 5); // 5% de combustible por cada mineral
-            if (est->combustible > 100) est->combustible = 100;
+            est->combustible = COMBUSTIBLE_MAXIMO; 
+            est->activa = 1; // Nos aseguramos de que siga viva
 
-            // La estación transfiere oxígeno a la nave a cambio
-            int enviar_oxigeno = 50; // Le damos bastante oxígeno ya que nos sobra
+            // Mandamos el máximo posible a la nave
+            int enviar_oxigeno = OXIGENO_MAXIMO; 
+            int enviar_combustible = COMBUSTIBLE_MAXIMO;
+
             sem_post(est->sem_mutex);
 
 
-            snprintf(respuesta, TAMANIO_MAX_MSG, "FUEL:0;OXY:%d", enviar_oxigeno);
+            //Enviamos AMBOS recursos en la respuesta
+            snprintf(respuesta, TAMANIO_MAX_MSG, "FUEL:%d;OXY:%d", enviar_combustible, enviar_oxigeno);
 
         // CAMBIO: en vez de mq_send(cola_estacion, ...), abrimos la cola privada de la nave
-        struct mq_attr attr_resp = {0, 3, TAMANIO_MAX_MSG, 0};
+        struct mq_attr attr_resp = {0};
+attr.mq_maxmsg = 3;
+attr.mq_msgsize = TAMANIO_MAX_MSG;
         mqd_t cola_nave = mq_open(nombre_cola_nave, O_CREAT | O_WRONLY, PERMISOS_COLA, &attr_resp);
         if (cola_nave == (mqd_t)-1) {
             perror("Error al abrir cola de nave específica");
@@ -317,7 +328,7 @@ void* hilo_atender_trueques(void* arg) {
 void* hilo_grafico_estacion(void* arg) {
     struct EstacionProceso* est = (struct EstacionProceso*) arg;
     int counter = 0;
-    int fila = 1, columna = 45; 
+   // int fila = 1, columna = 45; //estas variable no se usan, porque 
 
     int OFFSET_X = 30; 
     int OFFSET_Y = 2;

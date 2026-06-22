@@ -13,12 +13,18 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+
+// Almacén seguro para la última alerta recibida
+char ultima_alerta_hud[TAMANIO_MAX_MSG] = "";
+pthread_mutex_t mutex_alerta_hud = PTHREAD_MUTEX_INITIALIZER;
+
 /*hilos del cliente nave*/
 void *hilo_soporte_vital(void *arg);
 void *hilo_propulsion(void *arg);
 void *hilo_extraccion(void *arg);
 void *hilo_grafico_nave(void *arg);
 void *hilo_comercio(void *arg);
+void *hilo_receptor_alertas(void *arg);
 /*funciones*/
 int trueque_estacion(struct Nave *nave);
 int minerales_totales(struct Nave *nave);
@@ -45,14 +51,14 @@ static pthread_t g_hilos[5];
 // handler para nave
 void manejador_sigint(int sig) {
   // ctrl+c del nave, va al gameover
-
+  (void)sig; // Evita advertencia de variable no usada
   gameOver_nave(g_nave);
   exit(EXIT_SUCCESS);
 }
 
 // snprintf(buffer, TAMANIO_MAX_MSG, "PID:%d;MINERALES:%d", getpid(),
 // totalMinerales); esa linea esta en la linea
-static int ya_murio = 0;
+//static int ya_murio = 0; //esta var no se 
 
 int main(int argc, char *argv[]) {
   (void)argc;
@@ -79,8 +85,8 @@ int main(int argc, char *argv[]) {
   // Inicializar nave
   // cola = mq_open(NOMBRE_COLA_ESTACION, O_WRONLY, ...);
   // esa linea de arriba esta
-  nave.oxigeno = 100;
-  nave.combustible = 100;
+  nave.oxigeno = 500;
+  nave.combustible = 500;
   nave.en_trueque =
       0; // Nuevo campo para indicar si la nave está en medio de un trueque
   nave.velocidadMovimiento = 1;
@@ -140,7 +146,7 @@ int main(int argc, char *argv[]) {
   }
   // HILOS
   pthread_t hiloSoporteVital, hiloPropulsion, hiloExtraccion, hiloGrafico,
-      hiloComercio;
+      hiloComercio, hiloAlertas;
 
   if (pthread_create(&hiloSoporteVital, NULL, hilo_soporte_vital, &nave) != 0) {
     perror("pthread_create hilo_soporte_vital");
@@ -160,6 +166,12 @@ int main(int argc, char *argv[]) {
   }
   if (pthread_create(&hiloComercio, NULL, hilo_comercio, &args) != 0) {
     perror("pthread_create hilo_comercio");
+    exit(EXIT_FAILURE);
+  }
+
+  // --- LANZAR HILO DE ALERTAS DEL SERVIDOR ---
+  if (pthread_create(&hiloAlertas, NULL, hilo_receptor_alertas, &nave) != 0) {
+    perror("pthread_create hiloAlertas");
     exit(EXIT_FAILURE);
   }
 
@@ -188,8 +200,15 @@ int main(int argc, char *argv[]) {
 
   // Game over
   // 1. Avisamos al servidor
+  
+  //aca 
+  char nombre_cola_cierre[64];
+  snprintf(nombre_cola_cierre, sizeof(nombre_cola_cierre), NOMBRE_COLA_ALERTAS_NAVE, getpid());
+  mq_unlink(nombre_cola_cierre);
+  //enwind();, ya no es
 
-  gameOver_nave(&nave);
+
+   gameOver_nave(&nave); 
   exit(EXIT_SUCCESS);
 }
 
@@ -211,7 +230,10 @@ int minerales_totales(struct Nave *nave) { // no esta
 
 static int abrir_cola_escritura(mqd_t *cola, const char *nombre) {
   // aca
-  struct mq_attr attr = {0, 3, TAMANIO_MAX_MSG, 0};
+ struct mq_attr attr = {0};
+attr.mq_maxmsg = 3;
+attr.mq_msgsize = TAMANIO_MAX_MSG;
+
   *cola = mq_open(nombre, O_WRONLY | O_CREAT, 0666, &attr);
   if (*cola == (mqd_t)-1) {
     perror("Error al abrir la cola de escritura");
@@ -253,7 +275,9 @@ static int recibir_respuesta_estacion(char *respuesta_buffer,
   mqd_t cola_respuesta;
   ssize_t bytes_leidos;
   char nombre_cola[64];
-  struct mq_attr attr = {0, 3, TAMANIO_MAX_MSG, 0};
+  struct mq_attr attr = {0};
+attr.mq_maxmsg = 3;
+attr.mq_msgsize = TAMANIO_MAX_MSG;
 
   // Calculamos el nombre de nuestra cola privada
   snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_COLA_NAVE_SERVIDOR,
@@ -293,18 +317,21 @@ static int parsear_respuesta_estacion(const char *respuesta, int *combustible,
   return 0;
 }
 
-static void aplicar_trueque(struct Nave *nave, int combustible_recibido,
-                            int oxigeno_recibido) {
-  sem_wait(nave->sem_mutex);
+static void aplicar_trueque(struct Nave *nave, int combustible_recibido, int oxigeno_recibido) {
+    sem_wait(nave->sem_mutex);
 
-  nave->combustible += combustible_recibido;
-  nave->oxigeno += oxigeno_recibido;
+    nave->combustible += combustible_recibido;
+    nave->oxigeno += oxigeno_recibido;
 
-  for (int i = 0; i < 4; i++) {
-    nave->bodegaMinerales[i] = 0;
-  }
+    // Usamos los define para los topes máximos
+    if (nave->combustible > COMBUSTIBLE_MAXIMO) nave->combustible = COMBUSTIBLE_MAXIMO;
+    if (nave->oxigeno > OXIGENO_MAXIMO) nave->oxigeno = OXIGENO_MAXIMO;
 
-  sem_post(nave->sem_mutex);
+    for (int i = 0; i < 4; i++) {
+        nave->bodegaMinerales[i] = 0;
+    }
+
+    sem_post(nave->sem_mutex);
 }
 
 // misma que servidor
@@ -325,7 +352,9 @@ void inicializarVentanas_nave(struct Nave *nave) {
 }
 
 // mailbox para el respawn
+//nave quizas no es usada,porque el respawn lo maneja el servidor, pero la dejo por si en el futuro se le quiere pasar info al servidor desde el hilo de respawn
 void inicializar_nave(struct Nave *nave) {
+  (void)nave; // Evita advertencia de variable no usada
   struct MensajeConexion msg;
   msg.pid = getpid();
 
@@ -389,7 +418,10 @@ void gameOver_nave(struct Nave *nave) {
 
   endwin();
 }
+
+//quizas nave se usa porq
 void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
+  (void)nave; // Evita advertencia de variable no usada
   struct MensajeMovimiento mensaje;
   mensaje.pid = getpid();
   mensaje.posX = newPosX;
@@ -405,6 +437,7 @@ void enviar_movimiento(struct Nave *nave, int newPosX, int newPosY) {
 }
 
 // 2
+//aca la var ya_m
 void *hilo_soporte_vital(void *arg) {
   struct Nave *nave = (struct Nave *)arg;
 
@@ -703,13 +736,16 @@ int trueque_estacion(struct Nave *nave) { // nuevo
   return 0;
 }
 
-void *hilo_grafico_nave(void *arg) { // ojo
+
+void *hilo_grafico_nave(void *arg) {  //ojo
   struct ArgsNave *args = (struct ArgsNave *)arg;
   struct MatrizCompartida *shm = args->shm;
   struct Nave *nave = args->nave;
   char arr[11];
   char arr2[11];
-  int iteracion = 0;
+  //int iteracion = 0; //
+   
+
 
   refresh();
   sleep(1);
@@ -720,13 +756,14 @@ void *hilo_grafico_nave(void *arg) { // ojo
     sem_wait(nave->sem_mutex);
     refresh();
 
+    
     int oxigeno = nave->oxigeno;
     int combustible = nave->combustible;
     int posX = nave->posX;
     int posY = nave->posY;
     int minerales = calcular_total_minerales(nave);
 
-    sem_post(nave->sem_mutex);
+    sem_post(nave->sem_mutex);  
     refresh();
 
     int mitad = (oxigeno + 9) / 10;
@@ -737,6 +774,8 @@ void *hilo_grafico_nave(void *arg) { // ojo
       arr2[k] = k < mitad2 ? '=' : ' ';
     arr[10] = arr2[10] = '\0';
 
+    mvprintw(2, 0, "[GRAFICO] ox=%d comb=%d pos=(%d,%d) min=%d     ",
+             oxigeno, combustible, posX, posY, minerales);
     refresh();
 
     werase(nave->grafico.ventanaHud);
@@ -745,6 +784,15 @@ void *hilo_grafico_nave(void *arg) { // ojo
     mvwprintw(nave->grafico.ventanaHud, 2, 1, "Combustible: [%s]", arr2);
     mvwprintw(nave->grafico.ventanaHud, 3, 1, "Pos: (%2d, %2d)  ", posX, posY);
     mvwprintw(nave->grafico.ventanaHud, 4, 1, "Minerales:   %d", minerales);
+    // --- LEER Y COPIAR LA ALERTA AL HUD DE ESTACIÖN---
+    pthread_mutex_lock(&mutex_alerta_hud);
+    if (strlen(ultima_alerta_hud) > 0) {
+        wattron(nave->grafico.ventanaHud, A_BOLD);
+        mvwprintw(nave->grafico.ventanaHud, 5, 1, "%s", ultima_alerta_hud);
+        wattroff(nave->grafico.ventanaHud, A_BOLD);
+    }
+    pthread_mutex_unlock(&mutex_alerta_hud);
+
     wrefresh(nave->grafico.ventanaHud);
 
     werase(nave->grafico.ventana);
@@ -772,4 +820,39 @@ void *hilo_grafico_nave(void *arg) { // ojo
     usleep(100000);
   }
   return NULL;
+}
+
+
+
+void *hilo_receptor_alertas(void *arg) {
+    (void)arg; //el arg no se usa, por
+   // struct Nave *nave = (struct Nave *)arg; //
+    char nombre_cola[64];
+    snprintf(nombre_cola, sizeof(nombre_cola), NOMBRE_COLA_ALERTAS_NAVE, getpid());
+
+    // Configuración de la cola de alertas (5 mensajes de capacidad máxima)
+    struct mq_attr attr = {0};
+attr.mq_maxmsg = 3;
+attr.mq_msgsize = TAMANIO_MAX_MSG;
+    mqd_t mq_alertas = mq_open(nombre_cola, O_CREAT | O_RDONLY, 0666, &attr);
+    
+    if (mq_alertas == (mqd_t)-1) {
+        perror("[NAVE-ALERTAS] Error al abrir cola de alertas");
+        return NULL;
+    }
+
+    struct MensajeAlerta msg;
+
+    while (1) {
+        // Se queda durmiendo aquí hasta que el servidor mande una alerta
+        if (mq_receive(mq_alertas, (char *)&msg, sizeof(msg), NULL) != -1) {
+            pthread_mutex_lock(&mutex_alerta_hud);
+            strncpy(ultima_alerta_hud, msg.texto, sizeof(ultima_alerta_hud) - 1);
+            pthread_mutex_unlock(&mutex_alerta_hud);
+        }
+    }
+
+    mq_close(mq_alertas);
+    mq_unlink(nombre_cola);
+    return NULL;
 }
